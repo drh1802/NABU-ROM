@@ -1,0 +1,1964 @@
+   1:				; NABU 4K ROM
+   2:				; P/N: 90020060 RevA
+   3:				; recreated by D. Hunter Feb - Mar 2023
+   4:				;
+   5:				
+   6:				; I/O ports
+   7:     -	0000          	CTRL_REG	EQU	000h		; 74LS273
+   8:     -	0040          	PSG_DATA	EQU	040h		; AY-3-8910
+   9:     -	0041          	PSG_ADDR	EQU	041h
+  10:     -	0080          	HCCA		EQU	080h		; TR1863 UART
+  11:     -	0090          	KB_DATA		EQU	090h		; 8251A UART
+  12:     -	0091          	KB_STAT		EQU	091h
+  13:     -	00A0          	VDP_DATA	EQU	0A0h		; TMS9918A
+  14:     -	00A1          	VDP_ADDR	EQU	0A1h
+  15:				
+  16:				; PSG registers
+  17:     -	0007          	PSG_R7_ENABLE	EQU	007h
+  18:     -	000E          	PSG_R14_INT_MASK EQU	00Eh
+  19:     -	000F          	PSG_R15_STATUS	EQU	00Fh
+  20:				
+  21:     -	140F          	BEGIN		EQU	140Fh		; START OF LOADED PROGRAM
+  22:     -	2000          	RAM_TEST_START	EQU	2000h		; START AFTER 8K ROM 
+  23:     -	FC40          	VRAM		EQU	0FC40h		; VIDEO RAM MIRROR? START 
+  24:     -	FFEE          	STACK		EQU	0FFEEh		; STACK TOP + 1
+  25:				
+  26:				; INTERNAL VARIABLES
+  27:     -	FFEE          	CTRL_BITS	EQU	0FFEEh		; CURRENT CONTROL REGISTER SETTINGS
+  28:     -	FFEF          	POST_FLG	EQU	0FFEFh		; POWER ON SELF TEST ERROR FLAG
+  29:     -	FFF0          	ERR_CNT		EQU	0FFF0h		; ERROR COUNTS FOR EACH TEST
+  30:     -	FFF6          	BOOT_FLG	EQU	0FFF6h		; COLD BOOT FLAG
+  31:     -	FFF7          	TEST_NUM	EQU	0FFF7h		; CURRENT SELF TEST NUMBER
+  32:     -	FFF8          	SIG_STAT	EQU	0FFF8h		; SIGNAL STATUS
+  33:     -	FFF9          	DSP_STR		EQU	0FFF9h		; DISPLAY CODE STRING MEMORY FFF9h - FFFDh
+  34:     -	FFFE          	LOAD_FLG:	EQU	0FFFEh		; SET TO 5AA5h IF PROGRAM LOADED
+  35:				
+  36:				
+  37:				; NETWORK ADAPTOR CONSTANTS
+  38:     -	0010          	NA_ESCAPE	EQU	10h		; ESCAPE SEQUENCE
+  39:     -	0080          	NA_RESET	EQU	80h		; RESET CONNECTION
+  40:     -	0081          	NA_SET_STATUS	EQU	81h		; SET STATUS
+  41:     -	0082          	NA_GET_STATUS	EQU	82h		; GET STATUS
+  42:     -	0083          	NA_STARTUP	EQU	83h		; START UP CONNECTION
+  43:     -	0084          	NA_REQUEST	EQU	84h		; PACKET REQUEST
+  44:     -	0085          	NA_CHANGE	EQU	85h		; CHANGE CHANNEL
+  45:     -	0090          	NA_UNAUTH	EQU	90h		; UNAUTHORIZED ACCOUNT
+  46:     -	0091          	NA_AUTH		EQU	91h		; AUTHORIZED ACCOUNT
+  47:     -	009F          	NA_NO_SIGNAL	EQU	9Fh		; NO CABLE SIGNAL
+  48:     -	001F          	NA_SIGNAL	EQU	1Fh		; CABLE SIGNAL LOCK
+  49:     -	00E1          	NA_DONE		EQU	0E1h		; TRANSFER COMPLETE
+  50:     -	00E4          	NA_CONFIRM	EQU	0E4h		; CONFIRMED MESSAGE
+  51:				
+  52:				; STATUS MESSAGES
+  53:     -	0001          	STAT_SIG	EQU	01h		; SIGNAL OK
+  54:     -	0005          	STAT_READY	EQU	05h		; READY
+  55:     -	0006          	STAT_GOOD	EQU	06h		; GOOD
+  56:     -	001E          	STAT_NA_RDY	EQU	1Eh		; ADAPTOR READY
+  57:     -	008F          	STAT_CONN	EQU	8Fh		; CONNECTED
+  58:				;
+  59:				; ACK = ESCAPE, STAT_GOOD
+  60:				; FINISHED = ESCAPE, NA_DONE
+  61:				; PACKET SIZE = 1024 BYTES  = HEADER (16 BYTES) + PAYLOAD (991 BYTES) + FOOTER/CRC (2 BYTES)
+  62:				
+  63:     -	0002          	INV_RESP	EQU	02h		; INVALID RESPONSE
+  64:     -	0000          	OK_RESP		EQU	00h		; ALL IS GOOD RESPONSE
+  65:				
+  66:				
+  67:				; INTERRUPT MASKS
+  68:     -	0080          	INT_HRCV	EQU	80h		; HCCA RECEIVE CHARACTER
+  69:     -	0040          	INT_HSND	EQU	40h		; HCCA SEND CHARACTER
+  70:     -	0020          	INT_KBD		EQU	20h		; KEYBOARD 
+  71:				
+  72:				; CONTROL REGISTER (PORT 0) BITS
+  73:     -	0020          	PAUSE		EQU	020h		; D5 - YELLOW LED (1 = ON)
+  74:     -	0010          	ALERT		EQU	010h		; D4 - RED LED (1 = ON)
+  75:     -	0008          	CHECK		EQU	008h		; D3 - GREEN LED (1 = ON)
+  76:     -	0004          	STROBE		EQU	004h		; D2 - STROBE DATA TO PRINTER (1 = STROBE LOW)
+  77:     -	0002          	TV_SW		EQU	002h		; D1 - VIDEO TO TV (1 = NABU, 0 = CABLE)
+  78:     -	0001          	ROM_SEL		EQU	001h		; D0 - 0 = ROM SELECT, 1 = RAM
+  79:				
+  80:				
+  81:     -	0000          		ORG     0000h			; START AT RESET VECTOR
+  82:				
+  83:				        ; COLD BOOT
+  84:     -	0000          	COLD_BOOT:
+  85:    0+7	0000  3E02    		LD      A,TV_SW
+  86:    7+13	0002  32EEFF  	        LD      (CTRL_BITS),A	; SAVE CONTROL BIT SETTING
+  87:   20+11	0005  D300    	        OUT     (CTRL_REG),A	; SELECT NABU FOR SCREEN
+  88:   31+10	0007  31EEFF  	        LD      SP,STACK	; SET STACK POINTER
+  89:					
+  90:   41+10	000A  21C906  	        LD      HL,VDP_INIT_TBL	; POINT TO VDP INITIALIZATION TABLE
+  91:   51+7	000D  0608    	        LD      B,08h			
+  92:   58+7	000F  0EA1    	        LD      C,VDP_ADDR
+  93:     -	0011          	VDP_INIT:
+  94:   65+16	0011  EDA3    		OUTI			; INITIALIZE VDP
+  95:   81+4	0013  78      	        LD      A,B
+  96:   85+7	0014  F680    	        OR      80h
+  97:   92+11	0016  D3A1    	        OUT     (VDP_ADDR),A
+  98:  103+7	0018  E67F    	        AND     7Fh             
+  99:  110+7+5	001A  20F5    	        JR      NZ,VDP_INIT
+ 100:					
+ 101:  117+10	001C  21EFFF  	        LD      HL,POST_FLG	; CLEAR 10 BYTES ABOVE THE STACK
+ 102:  127+10	001F  11F0FF  	        LD      DE,ERR_CNT
+ 103:  137+10	0022  010900  	        LD      BC,0009h
+ 104:  147+4	0025  AF      	        XOR     A		; CLEAR ACC
+ 105:  151+7	0026  77      	        LD      (HL),A		; RESET POST FLAG
+ 106:  158+16+5	0027  EDB0    	        LDIR
+ 107:					
+ 108:  174+17	0029  CD2105  	        CALL    PSG_PORTB	; SET PSG TO PORT B
+ 109:					
+ 110:  191+4	002C  AF      	        XOR     A
+ 111:  195+17	002D  CD2A05  	        CALL    KB_CTRL		; INITIALIZE 8251 
+ 112:  212+17	0030  CD2A05  	        CALL    KB_CTRL
+ 113:  229+17	0033  CD2A05  	        CALL    KB_CTRL
+ 114:  246+17	0036  CD2A05  	        CALL    KB_CTRL
+ 115:  263+17	0039  CD2A05  	        CALL    KB_CTRL
+ 116:  280+7	003C  3E40    	        LD      A,40h           ; RESET 8251
+ 117:  287+17	003E  CD2A05  	        CALL    KB_CTRL
+ 118:  304+7	0041  3E4E    	        LD      A,4Eh           ; 1 STOP BIT, 8 BITS, 64X CLOCK
+ 119:  311+17	0043  CD2A05  	        CALL    KB_CTRL
+ 120:  328+7	0046  3E04    	        LD      A,04h		; ENABLE RECEIVE
+ 121:  335+17	0048  CD2A05  	        CALL    KB_CTRL
+ 122:					
+ 123:  352+17	004B  CDE304  	        CALL    LOAD_VDP_TABLE
+ 124:  369+17	004E  CD3205  	        CALL    CHK_LOAD	; PROGRAM LOADED BEFORE?
+ 125:  386+10	0051  CACA01  	        JP      Z,START_HCCA	; YES, SKIP SELF TEST
+ 126:  396+7	0054  3E3A    	        LD      A,3Ah           ; TURN ALL LEDS ON
+ 127:  403+11	0056  D300    	        OUT     (CTRL_REG),A
+ 128:					
+ 129:					; WAIT FOR COMMUNICATION FROM KEYBOARD
+ 130:  414+7	0058  260A    	        LD      H,0Ah
+ 131:  421+7	005A  0E20    	        LD      C,INT_KBD       ; ENABLE KB INTERRUPT
+ 132:  428+10	005C  1100E0  	        LD      DE,0E000h	; TIMEOUT VALUE
+ 133:  438+7	005F  0601    	        LD      B,01h
+ 134:     -	0061          	WAIT_KB:  
+ 135:  445+17	0061  CD6303  		CALL    DEC_AND_TEST_DE
+ 136:  462+7+5	0064  2804    	        JR      Z,WAIT_KB1	; NOT TIMED OUT
+ 137:  469+8+5	0066  1002    	        DJNZ    WAIT_KB1
+ 138:  477+12	0068  1822    	        JR      ROM_CHECK	; KEYBOARD OK, MOVE ON
+ 139:				
+ 140:     -	006A          	WAIT_KB1:  
+ 141:  489+17	006A  CD4D06  		CALL    SET_INT_MASK
+ 142:  506+7+5	006D  28F2    	        JR      Z,WAIT_KB
+ 143:  513+11	006F  DB90    	        IN      A,(KB_DATA)
+ 144:  524+7	0071  FE31    	        CP      31h             ; '1'
+ 145:  531+7+5	0073  280D    	        JR      Z,PRESS_1
+ 146:  538+7	0075  FE3D    	        CP      3Dh             ; '='
+ 147:  545+7+5	0077  20E8    	        JR      NZ,WAIT_KB
+ 148:  552+8	0079  CB44    	        BIT     0,H
+ 149:  560+7+5	007B  28E4    	        JR      Z,WAIT_KB
+ 150:     -	007D          	WAIT_KB2:  
+ 151:  567+4	007D  25      		DEC     H
+ 152:  571+7+5	007E  2808    	        JR      Z,WAIT_KB3	; GIVE UP TRYING
+ 153:  578+12	0080  18DF    	        JR      WAIT_KB
+ 154:				
+ 155:     -	0082          	PRESS_1:  
+ 156:  590+8	0082  CB44    		BIT     0,H
+ 157:  598+7+5	0084  20DB    	        JR      NZ,WAIT_KB
+ 158:  605+12	0086  18F5    	        JR      WAIT_KB2
+ 159:				
+ 160:     -	0088          	WAIT_KB3:  
+ 161:  617+10	0088  21EFFF  		LD      HL,POST_FLG
+ 162:  627+11	008B  34      	        INC     (HL)		; INCREMENT DEBUG FLAG TO INDICATE ERROR
+ 163:					
+ 164:				        ; ROM CHECK BY CALCULATING AND VERIFYING CHECKSUM
+ 165:					; ALSO THE PLACE FOR RE-STARTING
+ 166:					; TEST # 0
+ 167:     -	008C          	ROM_CHECK:  
+ 168:  638+13	008C  3AF6FF  		LD      A,(BOOT_FLG)	; COLD BOOT?  (CLEARED ABOVE, NOT ZERO IF RESTARTING)
+ 169:  651+8	008F  CB47    	        BIT     0,A
+ 170:  659+7+5	0091  2005    	        JR      NZ,ROM_CHK1
+ 171:  666+17	0093  CDD104  	        CALL    SET_LED
+ 172:  683+11	0096  D300    	        OUT     (CTRL_REG),A	; SET LEDS
+ 173:     -	0098          	ROM_CHK1:  
+ 174:  694+4	0098  AF      		XOR     A
+ 175:  698+13	0099  32FFFF  	        LD      (LOAD_FLG+1),A	; CLEAR LOAD FLAG
+ 176:  711+14	009C  DD21FD0F	        LD      IX,CHKSUM-1	; IX = ROM POINTER START BELOW CHECKSUM
+ 177:  725+10	00A0  11FFFF  	        LD      DE,0FFFFh	; DE = -1
+ 178:  735+4	00A3  AF      	        XOR     A
+ 179:  739+4	00A4  67      	        LD      H,A		; CLEAR H,L = CHECKSUM
+ 180:  743+4	00A5  6F      	        LD      L,A
+ 181:  747+4	00A6  47      	        LD      B,A		; CLEAR B
+ 182:     -	00A7          	ROM_CHK2:  
+ 183:  751+19	00A7  DD4E00  		LD      C,(IX+00h)	; GET ROM VALUE
+ 184:  770+11	00AA  09      	        ADD     HL,BC		; ADD TO RUNNING CHECKSUM
+ 185:  781+15	00AB  DD19    	        ADD     IX,DE		; DECREMENT ROM POINTER
+ 186:  796+7+5	00AD  38F8    	        JR      C,ROM_CHK2	; DONE?
+ 187:					
+ 188:  803+13	00AF  3AFE0F  	        LD      A,(CHKSUM)	; YES, COMPARE STORED CHECKSUM WITH H,L
+ 189:  816+4	00B2  BD      	        CP      L
+ 190:  820+7+5	00B3  2006    	        JR      NZ,ROM_CHK3
+ 191:  827+13	00B5  3AFF0F  	        LD      A,(CHKSUM+1)
+ 192:  840+4	00B8  94      	        SUB     H
+ 193:  844+7+5	00B9  2803    	        JR      Z,ROM_CHK4
+ 194:     -	00BB          	ROM_CHK3:  
+ 195:  851+17	00BB  CDA604  		CALL    FLASH_ALERT	; ROM ERROR
+ 196:     -	00BE          	ROM_CHK4:
+ 197:  868+17	00BE  CD6A04  		CALL    RESP_BEEP
+ 198:				
+ 199:					; TEST VIDEO DISPLAY PROCESSOR
+ 200:					; TEST # 1
+ 201:  885+4	00C1  AF      	        XOR     A
+ 202:  889+11	00C2  D3A1    	        OUT     (VDP_ADDR),A
+ 203:  900+7	00C4  3E40    	        LD      A,40h           ; WRITE TO VDP RAM AT 0000h
+ 204:  907+11	00C6  D3A1    	        OUT     (VDP_ADDR),A
+ 205:  918+4	00C8  AF      	        XOR     A		; FIRST VALUE IS 0
+ 206:  922+10	00C9  110100  	        LD      DE,0001h
+ 207:  932+14	00CC  DD2100C0	        LD      IX,0C000h
+ 208:     -	00D0          	VDP_TST_PREP:
+ 209:  946+11	00D0  D3A0    		OUT     (VDP_DATA),A	; PREPARE VDP RAM (2K WORTH) FOR TESTING
+ 210:  957+4	00D2  3C      	        INC     A		; INCREMENT VALUE STORED
+ 211:  961+15	00D3  DD19    	        ADD     IX,DE
+ 212:  976+7+5	00D5  30F9    	        JR      NC,VDP_TST_PREP
+ 213:					
+ 214:					; TEST VDP RAM	
+ 215:     -	00D7          	VDP_RAM_TEST:
+ 216:  983+14	00D7  DD2100C0	        LD      IX,0C000h
+ 217:  997+4	00DB  AF      	        XOR     A		; CLEAR REGISTERS
+ 218: 1001+4	00DC  4F      	        LD      C,A
+ 219: 1005+4	00DD  47      	        LD      B,A
+ 220: 1009+4	00DE  67      	        LD      H,A
+ 221: 1013+4	00DF  6F      	        LD      L,A
+ 222:     -	00E0          	VTEST1: 
+ 223: 1017+4	00E0  7D      		LD      A,L
+ 224: 1021+11	00E1  D3A1    	        OUT     (VDP_ADDR),A
+ 225: 1032+4	00E3  7C      	        LD      A,H
+ 226: 1036+11	00E4  D3A1    	        OUT     (VDP_ADDR),A
+ 227: 1047+11	00E6  DBA0    	        IN      A,(VDP_DATA)	; READ FROM VDP RAM AT (HL)
+ 228: 1058+4	00E8  B9      	        CP      C
+ 229: 1062+7+5	00E9  2018    	        JR      NZ,VTEST2       ; IS THE MEMORY CLEARED?
+ 230: 1069+4	00EB  7D      	        LD      A,L		; YES, 
+ 231: 1073+11	00EC  D3A1    	        OUT     (VDP_ADDR),A
+ 232: 1084+4	00EE  7C      	        LD      A,H
+ 233: 1088+7	00EF  F640    	        OR      40h             ; WRITE TO VDP RAM AT (HL)
+ 234: 1095+11	00F1  D3A1    	        OUT     (VDP_ADDR),A
+ 235: 1106+4	00F3  79      	        LD      A,C
+ 236: 1110+4	00F4  2F      	        CPL
+ 237: 1114+11	00F5  D3A0    	        OUT     (VDP_DATA),A	; WRITE ALL ONES
+ 238: 1125+4	00F7  7D      	        LD      A,L
+ 239: 1129+11	00F8  D3A1    	        OUT     (VDP_ADDR),A
+ 240: 1140+4	00FA  7C      	        LD      A,H
+ 241: 1144+11	00FB  D3A1    	        OUT     (VDP_ADDR),A
+ 242: 1155+11	00FD  DBA0    	        IN      A,(VDP_DATA)	; GET BACK
+ 243: 1166+4	00FF  2F      	        CPL
+ 244: 1170+4	0100  B9      	        CP      C		; VERIFY
+ 245: 1174+7+5	0101  2803    	        JR      Z,VTEST3	; IT'S GOOD
+ 246: 1181+17	0103  CDA604  	VTEST2: CALL    FLASH_ALERT	; IT'S NOT, INDICATE ERROR
+ 247: 1198+4	0106  0C      	VTEST3: INC     C
+ 248: 1202+6	0107  23      	        INC     HL
+ 249: 1208+10	0108  110100  	        LD      DE,0001h
+ 250: 1218+15	010B  DD19    	        ADD     IX,DE
+ 251: 1233+7+5	010D  30D1    	        JR      NC,VTEST1
+ 252: 1240+17	010F  CDE304  	        CALL    LOAD_VDP_TABLE	; RESTORE VDP SETTINGS (ERASED BY TEST)
+ 253: 1257+17	0112  CD3E05  	        CALL    SHOW_PN		; SHOW THE PART NUMBER
+ 254: 1274+17	0115  CD6A04  	        CALL    RESP_BEEP	; AND BEEP
+ 255:					
+ 256:					; TEST RAM 
+ 257:					; START AFTER THE ROM (ASSUMING 8K) AND UP TO THE STACK (2000h - FFEDh)
+ 258:					; NOTE: IT DOESN'T TEST THE RAM FROM 1000h TO 2000h WHICH IS EITHER RAM (4k) OR ROM (8k)
+ 259:				 	; TEST # 2
+ 260:     -	0118          	RAM_TEST:	
+ 261: 1291+4	0118  AF      	        XOR     A
+ 262: 1295+14	0119  DD210020	        LD      IX,RAM_TEST_START
+ 263: 1309+10	011D  210021  	        LD      HL,2100h
+ 264: 1319+10	0120  110100  	        LD      DE,0001h
+ 265: 1329+19	0123  DD7700  	RTEST1: LD      (IX+00h),A      ; FILL WITH INCREMENTING VALUES
+ 266: 1348+4	0126  3C      	        INC     A
+ 267: 1352+10	0127  DD23    	        INC     IX
+ 268: 1362+11	0129  19      	        ADD     HL,DE
+ 269: 1373+7+5	012A  30F7    	        JR      NC,RTEST1
+ 270:					
+ 271: 1380+4	012C  AF      	        XOR     A
+ 272: 1384+4	012D  4F      	        LD      C,A
+ 273: 1388+10	012E  210021  	        LD      HL,2100h
+ 274: 1398+14	0131  DD210020	        LD      IX,RAM_TEST_START
+ 275: 1412+4	0135  47      	        LD      B,A
+ 276: 1416+19	0136  DD7E00  	RTEST2: LD      A,(IX+00h)
+ 277: 1435+4	0139  B9      	        CP      C
+ 278: 1439+7+5	013A  200B    	        JR      NZ,RTEST3
+ 279: 1446+4	013C  2F      	        CPL
+ 280: 1450+19	013D  DD7700  	        LD      (IX+00h),A
+ 281: 1469+19	0140  DD7E00  	        LD      A,(IX+00h)
+ 282: 1488+4	0143  2F      	        CPL
+ 283: 1492+4	0144  B9      	        CP      C
+ 284: 1496+7+5	0145  2803    	        JR      Z,RTEST4
+ 285: 1503+17	0147  CDA604  	RTEST3: CALL    FLASH_ALERT	; SHOW ERROR
+ 286: 1520+10	014A  DD23    	RTEST4: INC     IX
+ 287: 1530+4	014C  0C      	        INC     C
+ 288: 1534+11	014D  19      	        ADD     HL,DE
+ 289: 1545+7+5	014E  30E6    	        JR      NC,RTEST2
+ 290: 1552+17	0150  CD6A04  	        CALL    RESP_BEEP
+ 291:					
+ 292:					; TEST PROGRAMMABLE SOUND GENERATOR (PSG)
+ 293:					; TEST # 3
+ 294:				
+ 295:					; CLEAR PSG REGISTERS	
+ 296: 1569+7	0153  0610    	        LD      B,10h
+ 297: 1576+7	0155  0E00    	        LD      C,00h
+ 298: 1583+4	0157  78      	CLRPSG: LD      A,B
+ 299: 1587+4	0158  3D      	        DEC     A
+ 300: 1591+11	0159  D341    	        OUT     (PSG_ADDR),A 
+ 301: 1602+4	015B  79      	        LD      A,C
+ 302: 1606+11	015C  D340    	        OUT     (PSG_DATA),A
+ 303: 1617+8+5	015E  10F7    	        DJNZ    CLRPSG
+ 304:					
+ 305:					; GENERATE A SERIES OF TONES
+ 306:     -	0160          	GEN_TONES:
+ 307: 1625+7	0160  0E00    	        LD      C,00h		; C = COUNT
+ 308: 1632+7	0162  06FF    	GTONE1: LD      B,0FFh
+ 309: 1639+4	0164  79      	GTONE2: LD      A,C
+ 310: 1643+11	0165  D341    	        OUT     (PSG_ADDR),A
+ 311: 1654+4	0167  78      	        LD      A,B
+ 312: 1658+11	0168  D340    	        OUT     (PSG_DATA),A	; GENERATE TONE 
+ 313: 1669+11	016A  DB40    	        IN      A,(PSG_DATA)	; GET TONE BACK
+ 314: 1680+17	016C  CD7E01  	        CALL    CHK_TONE
+ 315: 1697+10+7	016F  C4A604  	        CALL    NZ,FLASH_ALERT	; INDICATE ERROR IF IT OCCURRED
+ 316: 1707+8	0172  CB38    	        SRL     B		; SHIFT B FOR DURATION
+ 317: 1715+7+5	0174  38EE    	        JR      C,GTONE2
+ 318: 1722+4	0176  0C      	        INC     C		; NEXT TONE
+ 319: 1726+7	0177  3E0E    	        LD      A,14
+ 320: 1733+4	0179  B9      	        CP      C		; LAST TONE?
+ 321: 1737+7+5	017A  20E6    	        JR      NZ,GTONE1	; NO, CONTINUE
+ 322: 1744+12	017C  181B    	        JR      CHK_KB
+ 323:					
+ 324:				        ; CHECK SOUND GENERATOR TONE
+ 325:					; TONE NUMBER IN C
+ 326:					; DURATION IN B
+ 327:     -	017E          	CHK_TONE:  
+ 328: 1756+10	017E  218B01  		LD      HL,TONE_TBL
+ 329: 1766+4	0181  59      	        LD      E,C
+ 330: 1770+7	0182  1600    	        LD      D,00h		; SELECT TONE NUMBER
+ 331: 1777+11	0184  19      	        ADD     HL,DE
+ 332: 1788+7	0185  A6      	        AND     (HL)		; MASK WITH TONE
+ 333: 1795+4	0186  5F      	        LD      E,A
+ 334: 1799+4	0187  78      	        LD      A,B
+ 335: 1803+7	0188  A6      	        AND     (HL)
+ 336: 1810+4	0189  BB      	        CP      E		; SET ERROR FLAG
+ 337: 1814+10	018A  C9      	        RET
+ 338:				
+ 339:     -	018B          	TONE_TBL: 
+ 340:     -	018B  FF      		DEFB    0FFh		; TONE VALUES
+ 341:     -	018C  0F      	        DEFB    0Fh
+ 342:     -	018D  FF      	        DEFB    0FFh
+ 343:     -	018E  0F      	        DEFB    0Fh
+ 344:     -	018F  FF      	        DEFB    0FFh
+ 345:     -	0190  0F      	        DEFB    0Fh
+ 346:     -	0191  1F      	        DEFB    1Fh
+ 347:     -	0192  FF      	        DEFB    0FFh
+ 348:     -	0193  1F      	        DEFB    1Fh
+ 349:     -	0194  1F      	        DEFB    1Fh
+ 350:     -	0195  1F      	        DEFB    1Fh
+ 351:     -	0196  FF      	        DEFB    0FFh
+ 352:     -	0197  FF      	        DEFB    0FFh
+ 353:     -	0198  0F      	        DEFB    0Fh
+ 354:				
+ 355:				        ; KEYBOARD TEST
+ 356:					; TEST # 4
+ 357:					
+ 358:				        ; CHECK FOR KEYBOARD ERRORS
+ 359:     -	0199          	CHK_KB:  
+ 360: 1824+17	0199  CD6A04  		CALL    RESP_BEEP
+ 361: 1841+17	019C  CD2105  	        CALL    PSG_PORTB
+ 362: 1858+10	019F  110000  	        LD      DE,0000h
+ 363: 1868+7	01A2  0605    	        LD      B,05h		; NUMBER OF TRIES
+ 364:     -	01A4          	CHK_KB1:  
+ 365: 1875+7	01A4  0E20    		LD      C,INT_KBD
+ 366: 1882+17	01A6  CD4D06  	        CALL    SET_INT_MASK
+ 367: 1899+7+5	01A9  2816    	        JR      Z,CHK_KB3
+ 368: 1906+11	01AB  DB90    	        IN      A,(KB_DATA)
+ 369: 1917+7	01AD  FE95    	        CP      95h
+ 370: 1924+7+5	01AF  3010    	        JR      NC,CHK_KB3      ; KB POWER UP RESET?
+ 371: 1931+7	01B1  FE91    	        CP      91h
+ 372: 1938+7+5	01B3  380C    	        JR      C,CHK_KB3       ; KB RAM FAULT
+ 373: 1945+7	01B5  FE94    	        CP      94h
+ 374: 1952+7+5	01B7  2803    	        JR      Z,WDOG		; GOT KB WATCHDOG, CONTINUE
+ 375:								; WATCHDOG IS APPROX. EVERY 3.7 SECONDS
+ 376:     -	01B9          	CHK_KB2:  
+ 377: 1959+17	01B9  CDA604  		CALL    FLASH_ALERT	; KEYBOARD FAILURE, FLASH LEDS
+ 378:					
+ 379: 1976+17	01BC  CD6A04  	WDOG:  	CALL    RESP_BEEP
+ 380: 1993+12	01BF  1809    	        JR      START_HCCA	; NEXT TEST
+ 381:					
+ 382:     -	01C1          	CHK_KB3:  
+ 383: 2005+6	01C1  1B      		DEC     DE
+ 384: 2011+4	01C2  7A      	        LD      A,D
+ 385: 2015+4	01C3  B3      	        OR      E
+ 386: 2019+7+5	01C4  20DE    	        JR      NZ,CHK_KB1	; LONG TIME OUT CHECK
+ 387: 2026+8+5	01C6  10DC    	        DJNZ    CHK_KB1		; CHECK NUMBER OF TRIES
+ 388: 2034+12	01C8  18EF    	        JR      CHK_KB2		; GIVE UP AND QUIT
+ 389:				
+ 390:				        ; ADAPTOR TEST
+ 391:					; TEST # 5
+ 392:					
+ 393:				        ; GET A CHARACTER FROM THE NETWORK (HCCA)
+ 394:     -	01CA          	START_HCCA:
+ 395: 2046+11	01CA  DB80    		IN      A,(HCCA)
+ 396: 2057+17	01CC  CD8603  	        CALL    SEND_START	; SEND STARTUP SEQUENCE
+ 397: 2074+7+5	01CF  2812    	        JR      Z,START1	
+ 398: 2081+17	01D1  CDA604  	        CALL    FLASH_ALERT	; IF ERROR, INDICATE ON LEDS
+ 399: 2098+12	01D4  1830    	        JR      START2
+ 400:				
+ 401:				        ; START FAILED
+ 402:     -	01D6          	ST_FAIL:  
+ 403: 2110+7	01D6  3E05    		LD      A,05h		; RESET TEST NUMBER FOR ADAPTOR
+ 404: 2117+13	01D8  32F7FF  	        LD      (TEST_NUM),A	; SET TEST_NUM TO 05 (HCCA)
+ 405: 2130+13	01DB  32FEFF  	        LD      (LOAD_FLG),A	; RESET LOAD FLAG
+ 406: 2143+17	01DE  CDA604  	        CALL    FLASH_ALERT
+ 407: 2160+12	01E1  18E7    	        JR      START_HCCA	; TRY AGAIN
+ 408:				
+ 409:					; START WAS GOOD
+ 410:     -	01E3          	START1:  
+ 411: 2172+7	01E3  0E82    		LD      C,NA_GET_STATUS
+ 412: 2179+17	01E5  CD7903  	        CALL    OUT_HCCA	; REQUEST STATUS FROM ADAPTOR
+ 413: 2196+7+5	01E8  20EC    	        JR      NZ,ST_FAIL
+ 414: 2203+7	01EA  3E01    	        LD      A,STAT_SIG
+ 415:					
+ 416: 2210+11	01EC  D380    	        OUT     (HCCA),A	; REQUEST SIGNAL STATUS
+ 417: 2221+17	01EE  CD7A06  	        CALL    WAIT_FOR_HCCA
+ 418: 2238+11	01F1  DB80    	        IN      A,(HCCA)	; GET SIGNAL STATUS BACK
+ 419: 2249+7+5	01F3  20E1    	        JR      NZ,ST_FAIL
+ 420:					
+ 421: 2256+13	01F5  32F8FF  	        LD      (SIG_STAT),A	; PUT SIGNAL STATUS IN SIG_STAT
+ 422: 2269+7	01F8  0E10    	        LD      C,NA_ESCAPE
+ 423: 2276+17	01FA  CD6C03  	        CALL    CHK_HCCA	; EXPECT ESCAPE, THEN
+ 424: 2293+7+5	01FD  20D7    	        JR      NZ,ST_FAIL
+ 425:					
+ 426: 2300+7	01FF  0EE1    	        LD      C,NA_DONE
+ 427: 2307+17	0201  CD6C03  	        CALL    CHK_HCCA	; EXPECT DONE
+ 428: 2324+7+5	0204  20D0    	        JR      NZ,ST_FAIL	; IF ZERO, RECEIVED "FINISHED" (ESCAPE,DONE) RESPONSE
+ 429:					
+ 430:					
+ 431:     -	0206          	START2:  
+ 432: 2331+17	0206  CD3205  		CALL    CHK_LOAD	; PROGRAM LOADED?
+ 433: 2348+10+7	0209  C46A04  	        CALL    NZ,RESP_BEEP	; NO, SOUND BEEP
+ 434: 2358+13	020C  3AEFFF  	        LD      A,(POST_FLG)
+ 435: 2371+4	020F  B7      	        OR      A		; ERROR FLAG?
+ 436: 2375+10	0210  C28C00  	        JP      NZ,ROM_CHECK	; YES, RESTART TESTS ON ERROR
+ 437:				; *** THIS WOULD BE A GOOD PLACE FOR A JUMP TO A MONITOR OR OTHER CODE
+ 438: 2385+13	0213  3AF6FF  	        LD      A,(BOOT_FLG)	; CHECK COLD BOOT FLAG
+ 439: 2398+8	0216  CB47    	        BIT     0,A
+ 440: 2406+7+5	0218  2007    	        JR      NZ,START3	; WARM BOOT, JUMP AROUND TV SWITCH
+ 441: 2413+7	021A  3E02    	        LD      A,TV_SW
+ 442: 2420+13	021C  32EEFF  	        LD      (CTRL_BITS),A	; SET TV SWITCH FOR NABU
+ 443: 2433+11	021F  D300    	        OUT     (CTRL_REG),A
+ 444:					
+ 445:     -	0221          	START3:  
+ 446: 2444+10	0221  21F8FF  		LD      HL,SIG_STAT	; BRING BACK SIGNAL STATUS RECEIVED
+ 447: 2454+12	0224  CB7E    	        BIT     7,(HL)		; GET UPPER BIT OF SIGNAL STATUS
+ 448: 2466+7+5	0226  2877    	        JR      Z,CHAN_OK	; SIGNAL GOOD IF BIT 7 IS ZERO
+ 449:					
+ 450:     -	0228          	NEWCODE:
+ 451: 2473+10	0228  21D106  		LD      HL,MSG_CHAN	; OTHERWISE, PROMPT FOR THE USER CHANNEL CODE
+ 452: 2483+17	022B  CD6B05  	        CALL    DSP_MSG
+ 453:     -	022E          	NEWCOD1:  
+ 454: 2500+10	022E  21F9FF  		LD      HL,DSP_STR	; NEW CODE WILL GO IN DSP_STR
+ 455: 2510+10	0231  11C702  	        LD      DE,02C7h	; SCREEN ADDRESS TO ECHO CODE ENTRY
+ 456: 2520+17	0234  CD7C05  	        CALL    GET_HEX
+ 457: 2537+10	0237  21F9FF  	        LD      HL,DSP_STR	; POINT TO DIGIT DISPLAY STRING
+ 458: 2547+4	023A  AF      	        XOR     A
+ 459: 2551+4	023B  4F      	        LD      C,A		; CLEAR C
+ 460: 2555+7	023C  0604    	        LD      B,04h		; GET 4 HEX DIGITS AND STORE 
+ 461:								; IN SEQUENTIAL MEMORY LOCATIONS
+ 462:     -	023E          	NEWCOD2:  
+ 463: 2562+7	023E  7E      		LD      A,(HL)		; GET NIBBLE FROM MEMORY
+ 464: 2569+8	023F  CB40    	        BIT     0,B
+ 465: 2577+7+5	0241  2809    	        JR      Z,NEWCOD3	; DONE?
+ 466: 2584+8	0243  CB27    	        SLA     A		; NO, SHIFT CODE LEFT
+ 467: 2592+8	0245  CB67    	        BIT     4,A
+ 468: 2600+7+5	0247  2803    	        JR      Z,NEWCOD3
+ 469: 2607+8	0249  CBA7    	        RES     4,A
+ 470: 2615+4	024B  3C      	        INC     A
+ 471:     -	024C          	NEWCOD3:  
+ 472: 2619+4	024C  81      		ADD     A,C		; ADD NEW NIBBLE TO ONE BROUGHT FROM MEMORY
+ 473: 2623+4	024D  4F      	        LD      C,A
+ 474: 2627+6	024E  23      	        INC     HL
+ 475: 2633+8+5	024F  10ED    	        DJNZ    NEWCOD2		; RECEIVED 4 CHARACTERS?
+ 476: 2641+7	0251  E60F    	        AND     0Fh
+ 477: 2648+7	0253  BE      	        CP      (HL)
+ 478: 2655+7+5	0254  2810    	        JR      Z,NEWCOD4	; VALID CODE?
+ 479:					
+ 480: 2662+10	0256  21AC07  	        LD      HL,MSG_RETYPE	; NO, PROMPT FOR RE-TYPE
+ 481: 2672+17	0259  CD6B05  	        CALL    DSP_MSG
+ 482: 2689+7	025C  0E90    	        LD      C,90h
+ 483: 2696+10	025E  1100E0  	        LD      DE,0E000h
+ 484: 2706+17	0261  CDA206  	        CALL    BEEP
+ 485: 2723+12	0264  18C8    	        JR      NEWCOD1
+ 486:				
+ 487:     -	0266          	NEWCOD4:  
+ 488: 2735+10	0266  21F9FF  		LD      HL,DSP_STR	; POINT TO NEW CODE
+ 489: 2745+7	0269  0604    	        LD      B,04h
+ 490: 2752+10	026B  110000  	        LD      DE,0000h
+ 491:     -	026E          	NEWCOD5:  
+ 492: 2762+7	026E  7E      		LD      A,(HL)		; GET CODE NIBBLE
+ 493: 2769+8	026F  CB23    	        SLA     E
+ 494: 2777+8	0271  CB12    	        RL      D
+ 495: 2785+8	0273  CB23    	        SLA     E
+ 496: 2793+8	0275  CB12    	        RL      D
+ 497: 2801+8	0277  CB23    	        SLA     E
+ 498: 2809+8	0279  CB12    	        RL      D
+ 499: 2817+8	027B  CB23    	        SLA     E
+ 500: 2825+8	027D  CB12    	        RL      D		; SHIFT DE OVER BY 4
+ 501: 2833+4	027F  83      	        ADD     A,E		; ADD IN NIBBLE TO DE
+ 502: 2837+4	0280  5F      	        LD      E,A
+ 503: 2841+6	0281  23      	        INC     HL		; NEXT CODE 
+ 504: 2847+8+5	0282  10EA    	        DJNZ    NEWCOD5		; 4 NIBBLES = 1 WORD
+ 505: 2855+11	0284  D5      	        PUSH    DE		; SAVE
+ 506: 2866+7	0285  0E85    	        LD      C,NA_CHANGE
+ 507: 2873+17	0287  CD7903  	        CALL    OUT_HCCA	; SEND NEW CHANGE COMMAND TO HCCA
+ 508: 2890+10	028A  C2D601  	        JP      NZ,ST_FAIL
+ 509:					
+ 510: 2900+10	028D  D1      	        POP     DE		; GET CODE
+ 511: 2910+4	028E  7A      	        LD      A,D
+ 512: 2914+11	028F  D380    	        OUT     (HCCA),A	; SEND MSB
+ 513: 2925+7	0291  0E40    	        LD      C,INT_HSND
+ 514: 2932+17	0293  CD4D06  	        CALL    SET_INT_MASK
+ 515: 2949+4	0296  7B      	        LD      A,E
+ 516: 2953+11	0297  D380    	        OUT     (HCCA),A	; SEND LSB
+ 517: 2964+17	0299  CDEE05  	        CALL    EXP_CONF	; CHECK FOR CONFIRMATION BACK
+ 518: 2981+10	029C  C2D601  	        JP      NZ,ST_FAIL	; NO, TRY AGAIN
+ 519:				
+ 520:					; HAVE A VALID CHANNEL CODE
+ 521:     -	029F          	CHAN_OK:
+ 522: 2991+7	029F  0E81    		LD      C,NA_SET_STATUS	; SEND TO HCCA: NA_SET_STATUS, STAT_CONN, STAT_READY
+ 523: 2998+17	02A1  CD7903  	        CALL    OUT_HCCA	
+ 524: 3015+10	02A4  C2D601  	        JP      NZ,ST_FAIL
+ 525:					
+ 526: 3025+7	02A7  3E8F    	        LD      A,STAT_CONN	; INDICATE CONNECTED
+ 527: 3032+11	02A9  D380    	        OUT     (HCCA),A
+ 528: 3043+7	02AB  0E40    	        LD      C,INT_HSND
+ 529: 3050+17	02AD  CD4D06  	        CALL    SET_INT_MASK
+ 530: 3067+7	02B0  3E05    	        LD      A,STAT_READY	; AND READY
+ 531: 3074+11	02B2  D380    	        OUT     (HCCA),A
+ 532: 3085+17	02B4  CDEE05  	        CALL    EXP_CONF
+ 533: 3102+10	02B7  C2D601  	        JP      NZ,ST_FAIL
+ 534:					
+ 535: 3112+7	02BA  3E05    	        LD      A,STAT_READY
+ 536: 3119+13	02BC  32F8FF  	        LD      (SIG_STAT),A	; PUT READY IN SIG_STAT  (ADAPTOR READY)
+ 537:					
+ 538: 3132+10	02BF  210000  	        LD      HL,0000h
+ 539: 3142+10	02C2  110000  	        LD      DE,0000h
+ 540: 3152+10	02C5  010010  	        LD      BC,1000h
+ 541: 3162+16+5	02C8  EDB0    	        LDIR			; COPY ROM CODE TO RAM UNDERNEATH
+ 542:					
+ 543: 3178+13	02CA  3AEEFF  	        LD      A,(CTRL_BITS)
+ 544: 3191+8	02CD  CBC7    	        SET     0,A
+ 545: 3199+11	02CF  D300    	        OUT     (CTRL_REG),A	; DISABLE ROM AND SWITCH TO RAM
+ 546:								; *** NOW RUNNING IN RAM
+ 547:					
+ 548: 3210+10	02D1  212C07  	        LD      HL,MSG_WAIT	; SEND WAIT MESSAGE
+ 549: 3220+17	02D4  CD6B05  	        CALL    DSP_MSG
+ 550:				
+ 551:					; READY TO GET PAK # 000001
+ 552:				
+ 553:					;
+ 554:					; RAM LAYOUT FOR RECEIVING PACKETS / PROGRAMS
+ 555:					;
+ 556:					; ADDRESS	START	DESCRIPTION
+ 557:					; 1000h		00	PAK ID BITS 23-16
+ 558:					; 1001h		00	PAK ID BITS 15-8
+ 559:					; 1002h		01	PAK ID BITS 7-0
+ 560:					; 1003h		00	SEGMENT NUMBER
+ 561:					; 1004h		0B	LSB OF PACKET STORAGE ADDRESS
+ 562:					; 1005h		10	MSB OF PACKET STORAGE ADDRESS
+ 563:					; 1006h		XX	LSB OF PAYLOAD LENGTH (991 MAX)
+ 564:					; 1007h		XX	MSB OF PAYLOAD LENGTH
+ 565:					; 1008h		0D	LSB OF RAM WRITE ADDRESS
+ 566:					; 1009h		14	MSB OF RAM WRITE ADDRESS
+ 567:					; 100Ah		XX	LAST PACKET FLAG IN BIT 4 ?
+ 568:					; 100Bh		XX	START OF PACKET (1024 BYTES)
+ 569:					;  ---
+ 570:					; 140Ah		XX	END OF PACKET
+ 571:					; 140Bh		00	LSB OF LAST ADDRESS FOR DATA
+ 572:					; 140Ch		00	MSB OF LAST ADDRESS FOR DATA
+ 573:					; 140Dh		XX	LSB OF DATA SIZE OF PROGRAM?
+ 574:					; 140Eh		XX	MSB OF DATA SIZE OF PROGRAM?
+ 575:					; 140Fh		XX	STARTING POINT OF PROGRAM
+ 576:					;
+ 577:					; PACKET = 16 BYTES HEADER, 991 BYTES PAYLOAD, 2 BYTES FOOTER (CRC?)
+ 578:					;
+ 579:					; HEADER:
+ 580:					;	PAK ID:		USB MSB LSB	24 BIT PAK ID
+ 581:					;	SEGMENT:	XX		SEGMENT NUMBER
+ 582:					;	OWNER:		01h
+ 583:					;	TIER:		75h 0FFh 0FFh 0FFh
+ 584:					;	UNKNOWN:	7Fh 80h
+ 585:					;	TYPE:		XX		00h (NORMAL) OR 10h (LAST SEGMENT)
+ 586:					;	SEGMENT:	LSB MSB
+ 587:					;	OFFSET: 	MSB LSB
+ 588:					;
+ 589:				
+ 590:				        ; LOAD A PACKET FROM HCCA, COPY TO RAM
+ 591:					; (RUNNING OUT OF RAM NOW)
+ 592:     -	02D7          	LOAD_PKT:  
+ 593: 3237+4	02D7  AF      		XOR     A
+ 594: 3241+13	02D8  320010  	        LD      (1000h),A
+ 595: 3254+13	02DB  320110  	        LD      (1001h),A
+ 596: 3267+13	02DE  320310  	        LD      (1003h),A
+ 597: 3280+4	02E1  3C      	        INC     A
+ 598: 3284+13	02E2  320210  	        LD      (1002h),A	; 1000h -> 1002h = 00,00,01 (PAK ID)  1003h = 00 (SEGMENT)
+ 599: 3297+10	02E5  010B10  	        LD      BC,100Bh
+ 600: 3307+20	02E8  ED430410	        LD      (1004h),BC	; 1004h = 100Bh (PACKET START ADDRESS)
+ 601: 3327+10	02EC  010D14  	        LD      BC,140Dh
+ 602: 3337+20	02EF  ED430810	        LD      (1008h),BC	; 1008h = 140Dh	(WRITE ADDRESS)
+ 603: 3357+4	02F3  AF      	        XOR     A
+ 604: 3361+13	02F4  320B14  	        LD      (140Bh),A	; 140Bh = 0	(LAST ADDRESS)
+ 605: 3374+13	02F7  320C14  	        LD      (140Ch),A	; 140Ch = 0
+ 606: 3387+4	02FA  AF      	        XOR     A
+ 607: 3391+11	02FB  D341    	        OUT     (PSG_ADDR),A 
+ 608: 3402+11	02FD  D340    	        OUT     (PSG_DATA),A 	; RESET PSG
+ 609: 3413+17	02FF  CD8A06  	        CALL    INIT_PSG
+ 610:					
+ 611: 3430+17	0302  CDB003  	LDPKT1: CALL    RCV_PKT		; RECEIVE A PACKET FROM THE HCCA
+ 612: 3447+10	0305  C2D601  	        JP      NZ,ST_FAIL	; SUCCESSFUL?
+ 613:					
+ 614: 3457+4	0308  AF      	        XOR     A		; YES
+ 615: 3461+11	0309  D341    	        OUT     (PSG_ADDR),A
+ 616: 3472+13	030B  3A0310  	        LD      A,(1003h)
+ 617: 3485+8	030E  CB27    	        SLA     A
+ 618: 3493+8	0310  CB27    	        SLA     A		; TIMES 4
+ 619: 3501+4	0312  2F      	        CPL			; INVERT
+ 620: 3505+11	0313  D340    	        OUT     (PSG_DATA),A	; INCREMENTING TONE PITCH
+ 621: 3516+16	0315  2A0410  	        LD      HL,(1004h)
+ 622: 3532+10	0318  010B00  	        LD      BC,000Bh
+ 623: 3542+11	031B  09      	        ADD     HL,BC		; HL = (1004h) + 11
+ 624: 3553+7	031C  7E      	        LD      A,(HL)		; OFFSET INTO PACKET RECEIVED
+ 625: 3560+13	031D  320A10  	        LD      (100Ah),A	; LAST PACKET FLAG?
+ 626: 3573+16	0320  2A0610  	        LD      HL,(1006h)
+ 627: 3589+10	0323  01EEFF  	        LD      BC,-18
+ 628: 3599+11	0326  09      	        ADD     HL,BC		; HL = PAYLOAD COUNT FOR PACKET
+ 629: 3610+11	0327  E5      	        PUSH    HL
+ 630: 3621+10	0328  C1      	        POP     BC		; NUMBER OF BYTES TO COPY
+ 631: 3631+16	0329  2A0B14  	        LD      HL,(140Bh)
+ 632: 3647+11	032C  09      	        ADD     HL,BC
+ 633: 3658+16	032D  220B14  	        LD      (140Bh),HL	; LAST ADDRESS OF DATA
+ 634: 3674+16	0330  2A0410  	        LD      HL,(1004h)
+ 635: 3690+10	0333  111000  	        LD      DE,0010h
+ 636: 3700+11	0336  19      	        ADD     HL,DE
+ 637: 3711+20	0337  ED5B0810	        LD      DE,(1008h)	; OFFSET 16 BYTES INTO PAYLOAD
+ 638: 3731+16+5	033B  EDB0    	        LDIR			; COPY PAYLOAD
+ 639:					
+ 640: 3747+20	033D  ED530810	        LD      (1008h),DE
+ 641: 3767+13	0341  3A0A10  	        LD      A,(100Ah)
+ 642: 3780+8	0344  CB67    	        BIT     4,A		; CHECK IF LAST PACKET
+ 643: 3788+7+5	0346  2006    	        JR      NZ,LOAD_DONE	; IT IS, WRAP THINGS UP
+ 644: 3795+10	0348  210310  	        LD      HL,1003h
+ 645: 3805+11	034B  34      	        INC     (HL)		; INCREMENT SEGMENT NUMBER
+ 646: 3816+12	034C  18B4    	        JR      LDPKT1 
+ 647:				
+ 648:					; SET FLAG TO INDICATE PROGRAM LOAD COMPLETE
+ 649:					; TOP TWO BYTES = 5AA5h
+ 650:     -	034E          	LOAD_DONE:
+ 651: 3828+7	034E  3EA5    		LD      A,0A5h		; SET LOAD INDICATOR
+ 652: 3835+13	0350  32FEFF  	        LD      (LOAD_FLG),A
+ 653: 3848+7	0353  3E5A    	        LD      A,5Ah
+ 654: 3855+13	0355  32FFFF  	        LD      (LOAD_FLG+1),A
+ 655:					
+ 656: 3868+7	0358  3E07    	        LD      A,PSG_R7_ENABLE
+ 657: 3875+11	035A  D341    	        OUT     (PSG_ADDR),A    
+ 658: 3886+7	035C  3E7F    	        LD      A,7Fh           ; ENABLE PORTB
+ 659: 3893+11	035E  D340    	        OUT     (PSG_DATA),A
+ 660: 3904+10	0360  C30F14  	        JP      BEGIN		; RUN PROGRAM LOADED
+ 661:				
+ 662:				
+ 663:					;*** SUBROUTINES ***
+ 664:					; DECREMENT DE, RETURN 1 IF ZERO, 0 IF IT IS NOT
+ 665:     -	0363          	DEC_AND_TEST_DE:
+ 666: 3914+6	0363  1B      		DEC     DE
+ 667: 3920+4	0364  7A      	        LD      A,D
+ 668: 3924+4	0365  B3      	        OR      E
+ 669: 3928+7+5	0366  2802    	        JR      Z,DECTST1	; A = 0
+ 670: 3935+4	0368  AF      	        XOR     A
+ 671: 3939+4	0369  3D      	        DEC     A		; A = -1
+ 672:     -	036A          	DECTST1:  
+ 673: 3943+4	036A  3C      		INC     A		; 1 = DE IS ZERO, 0 = DE IS NOT ZERO
+ 674: 3947+10	036B  C9      	        RET
+ 675:				
+ 676:				        ; RECEIVE A CHARACTER FROM HCCA, AND CHECK THAT IT EQUALS REG C
+ 677:     -	036C          	CHK_HCCA:  
+ 678: 3957+11	036C  C5      		PUSH    BC
+ 679: 3968+17	036D  CD7A06  	        CALL    WAIT_FOR_HCCA	; WAIT FOR CHARACTER FROM HCCA
+ 680: 3985+10	0370  C1      	        POP     BC
+ 681: 3995+5+6	0371  C0      	        RET     NZ		; TIMED OUT, EXIT
+ 682: 4000+11	0372  DB80    	        IN      A,(HCCA)	; GET CHARACTER
+ 683: 4011+4	0374  91      	        SUB     C		
+ 684: 4015+5+6	0375  C8      	        RET     Z		; RETURN 0 IF IT MATCHES
+ 685: 4020+7	0376  3E02    	        LD      A,INV_RESP	; ELSE RETURN 2
+ 686: 4027+10	0378  C9      	        RET
+ 687:				
+ 688:				        ; OUTPUT A CHARACTER FROM REG C TO HCCA, VERIFY RESPONSE IS ACK (NA_ESCAPE, STAT_GOOD)
+ 689:     -	0379          	OUT_HCCA:  
+ 690: 4037+4	0379  79      		LD      A,C
+ 691: 4041+11	037A  D380    	        OUT     (HCCA),A	; SEND CHARACTER
+ 692: 4052+7	037C  0E10    	        LD      C,NA_ESCAPE
+ 693: 4059+17	037E  CD6C03  	        CALL    CHK_HCCA	; REPLY IS ESCAPE?
+ 694: 4076+5+6	0381  C0      	        RET     NZ		; NO, EXIT
+ 695: 4081+7	0382  0E06    	        LD      C,STAT_GOOD	; YES, LOOK FOR STATUS GOOD (ACK MESSAGE)
+ 696: 4088+12	0384  18E6    	        JR      CHK_HCCA
+ 697:				
+ 698:					; SEND 4 STARTUP BYTES TO ADAPTOR
+ 699:     -	0386          	SEND_START:	
+ 700: 4100+7	0386  0604    		LD      B,04h
+ 701:     -	0388          	SND_STRT1:  
+ 702: 4107+7	0388  3E83    		LD      A,NA_STARTUP	; STARTUP BYTE
+ 703: 4114+11	038A  F5      	        PUSH    AF		; MOVE STACK TO KEEP IT CLEAN
+ 704: 4125+11	038B  D380    	        OUT     (HCCA),A	; SEND STARTUP
+ 705:     -	038D          	SND_STRT2:  
+ 706: 4136+10	038D  F1      		POP     AF		; CLEAN UP STACK
+ 707: 4146+7	038E  0E10    	        LD      C,NA_ESCAPE
+ 708: 4153+10	0390  21A403  	        LD      HL,SND_STRT4
+ 709:     -	0393          	SND_STRT3:
+ 710: 4163+11	0393  E5      		PUSH    HL		; PUSH RETURN ADDRESS ON STACK
+ 711: 4174+17	0394  CD6C03  	        CALL    CHK_HCCA	; CHECK FOR RESPONSE ACK (NA_ESCAPE, STAT_GOOD) THEN CONFIRMED
+ 712: 4191+7	0397  FE02    	        CP      INV_RESP		
+ 713: 4198+7+5	0399  28F2    	        JR      Z,SND_STRT2	; INVALID RESPONSE, TRY AGAIN
+ 714: 4205+7	039B  FE00    	        CP      OK_RESP
+ 715: 4212+5+6	039D  C8      	        RET     Z		; GOT THE RIGHT RESPONSE, RETURN TO ADDRESS PUSHED
+ 716: 4217+10	039E  F1      	        POP     AF		; NOPE, CLEAN UP STACK
+ 717: 4227+8+5	039F  10E7    	        DJNZ    SND_STRT1	; TRY IT AGAIN
+ 718: 4235+4	03A1  AF      	        XOR     A
+ 719: 4239+4	03A2  3C      	        INC     A		; SET A TO 1 TO INDICATE FAILURE
+ 720: 4243+10	03A3  C9      	        RET
+ 721:				
+ 722:     -	03A4          	SND_STRT4:  
+ 723: 4253+7	03A4  0E06    		LD	C,STAT_GOOD
+ 724: 4260+10	03A6  21AB03  		LD	HL,SND_STRT5	; PUSH RETURN ADDRESS ON STACK
+ 725: 4270+12	03A9  18E8    		JR	SND_STRT3
+ 726:     -	03AB          	SND_STRT5:
+ 727: 4282+7	03AB  0EE4    		LD	C,NA_CONFIRM
+ 728: 4289+10	03AD  E1      		POP	HL		; CLEAN UP STACK
+ 729: 4299+12	03AE  18E3    		JR	SND_STRT3
+ 730:				
+ 731:					; RECEIVE A PACKET FROM THE HCCA
+ 732:     -	03B0          	RCV_PKT:  
+ 733: 4311+4	03B0  D9      		EXX			;* INITIALIZE ALTERNATE REGISTERS FOR CRC
+ 734: 4315+4	03B1  AF      	        XOR     A		;* CLEAR A
+ 735: 4319+4	03B2  3D      	        DEC     A		;* A = 0FFh
+ 736: 4323+4	03B3  57      	        LD      D,A		;* DE = 0FFFFh
+ 737: 4327+4	03B4  5F      	        LD      E,A		;*
+ 738: 4331+4	03B5  D9      	        EXX
+ 739:					
+ 740: 4335+7	03B6  0E84    	        LD      C,NA_REQUEST
+ 741: 4342+17	03B8  CD7903  	        CALL    OUT_HCCA	; REQUEST PAK #
+ 742: 4359+5+6	03BB  C0      	        RET     NZ
+ 743: 4364+7	03BC  0604    	        LD      B,04h
+ 744: 4371+10	03BE  210310  	        LD      HL,1003h	
+ 745: 4381+7	03C1  0E40    	RCVP1:  LD      C,INT_HSND	; SEND SEGMENT AND PAK ID, LOWEST BYTE FIRST
+ 746: 4388+17	03C3  CD4D06  	        CALL    SET_INT_MASK
+ 747: 4405+7+5	03C6  28F9    	        JR      Z,RCVP1
+ 748: 4412+7	03C8  7E      	        LD      A,(HL)
+ 749: 4419+11	03C9  D380    	        OUT     (HCCA),A	; SEND BYTE
+ 750: 4430+4	03CB  2D      	        DEC     L		; SEND FROM 1003h -> 1000h
+ 751: 4434+8+5	03CC  10F3    	        DJNZ    RCVP1
+ 752:					
+ 753: 4442+7	03CE  0EE4    	        LD      C,NA_CONFIRM
+ 754: 4449+17	03D0  CD6C03  	        CALL    CHK_HCCA	; GET CONFIRMATION?
+ 755: 4466+5+6	03D3  C0      	        RET     NZ
+ 756:					
+ 757: 4471+7	03D4  0618    	        LD      B,18h		; NOT SURE WHAT THIS IS ABOUT
+ 758: 4478+10	03D6  110100  	        LD      DE,0001h
+ 759: 4488+10	03D9  210000  	        LD      HL,0000h
+ 760: 4498+11	03DC  19      	RCVP2:  ADD     HL,DE
+ 761: 4509+7+5	03DD  300C    	        JR      NC,RCVP3
+ 762: 4516+8+5	03DF  100A    	        DJNZ    RCVP3
+ 763:					
+ 764: 4524+10	03E1  21F506  	        LD      HL,MSG_WRONG	; SOMETHING WENT HORRIBLY WRONG
+ 765: 4534+17	03E4  CD6B05  	        CALL    DSP_MSG
+ 766: 4551+10	03E7  C1      	        POP     BC
+ 767: 4561+10	03E8  C3D702  	        JP      LOAD_PKT
+ 768:				
+ 769: 4571+7	03EB  0E80    	RCVP3:  LD      C,INT_HRCV	; WAIT FOR BYTE FROM HCCA
+ 770: 4578+17	03ED  CD4D06  	        CALL    SET_INT_MASK
+ 771: 4595+7+5	03F0  28EA    	        JR      Z,RCVP2
+ 772: 4602+11	03F2  DB80    	        IN      A,(HCCA)
+ 773: 4613+7	03F4  D691    	        SUB     NA_AUTH		; RECEIVE AUTHORIZATION?
+ 774: 4620+5+6	03F6  C0      	        RET     NZ		; NO, RETURN
+ 775:					
+ 776: 4625+7	03F7  3E10    	        LD      A,NA_ESCAPE	; YES
+ 777: 4632+11	03F9  D380    	        OUT     (HCCA),A	; SEND ESCAPE (START OF ACK)
+ 778: 4643+7	03FB  0E40    	RCVP4:  LD      C,INT_HSND
+ 779: 4650+17	03FD  CD4D06  	        CALL    SET_INT_MASK
+ 780: 4667+7+5	0400  28F9    	        JR      Z,RCVP4
+ 781:					
+ 782: 4674+7	0402  0E80    	        LD      C,INT_HRCV
+ 783: 4681+17	0404  CD4D06  	        CALL    SET_INT_MASK	; CHANGE TO RECEIVE INTERRUPT
+ 784:					
+ 785: 4698+16	0407  2A0410  	        LD      HL,(1004h)	; GET PACKET START ADDRESS
+ 786: 4714+10	040A  010000  	        LD      BC,0000h
+ 787: 4724+8	040D  CB83    	        RES     0,E		; DE = 0000h
+ 788: 4732+7	040F  3E06    	        LD      A,STAT_GOOD
+ 789: 4739+11	0411  D380    	        OUT     (HCCA),A	; SEND GOOD (END OF ACK)
+ 790: 4750+11	0413  D5      	RCVP5:  PUSH    DE
+ 791: 4761+10	0414  11FFFF  	        LD      DE,0FFFFh
+ 792: 4771+7	0417  3E0F    	RCVP6:  LD      A,PSG_R15_STATUS
+ 793: 4778+11	0419  D341    	        OUT     (PSG_ADDR),A
+ 794: 4789+11	041B  DB40    	        IN      A,(PSG_DATA)
+ 795: 4800+8	041D  CB47    	        BIT     0,A		; BYTE RECEIVED?
+ 796: 4808+7+5	041F  2007    	        JR      NZ,RCVP7
+ 797: 4815+17	0421  CD6303  	        CALL    DEC_AND_TEST_DE
+ 798: 4832+7+5	0424  203F    	        JR      NZ,RCVP11	; TIMED OUT?
+ 799: 4839+12	0426  18EF    	        JR      RCVP6
+ 800:				
+ 801: 4851+10	0428  D1      	RCVP7:  POP     DE
+ 802: 4861+11	0429  DB80    	        IN      A,(HCCA)	; GET BYTE FROM HCCA
+ 803: 4872+7	042B  FE10    	        CP      NA_ESCAPE
+ 804: 4879+7+5	042D  2012    	        JR      NZ,RCVP9	; GOT ESCAPE CODE?
+ 805: 4886+8	042F  CB43    	        BIT     0,E
+ 806: 4894+7+5	0431  280A    	        JR      Z,RCVP8		; ALREADY CLEARED?
+ 807: 4901+8	0433  CB83    	        RES     0,E		; NO, CLEAR FLAG
+ 808: 4909+7	0435  77      	        LD      (HL),A		; SAVE BYTE
+ 809: 4916+17	0436  CD5D06  	        CALL    CALC_CRC
+ 810: 4933+6	0439  23      	        INC     HL		; NEXT ADDRESS
+ 811: 4939+6	043A  03      	        INC     BC		; INCREMENT COUNT
+ 812: 4945+12	043B  18D6    	        JR      RCVP5
+ 813:				
+ 814: 4957+8	043D  CBC3    	RCVP8:  SET     0,E		; YES, SET ESCAPE RECEIVED FLAG
+ 815: 4965+12	043F  18D2    	        JR      RCVP5
+ 816:				
+ 817: 4977+8	0441  CB43    	RCVP9:  BIT     0,E		; ESCAPE FLAG SET?
+ 818: 4985+7+5	0443  2008    	        JR      NZ,RCVP10
+ 819: 4992+7	0445  77      	        LD      (HL),A		; SAVE BYTE
+ 820: 4999+17	0446  CD5D06  	        CALL    CALC_CRC
+ 821: 5016+6	0449  23      	        INC     HL		; NEXT ADDRESS
+ 822: 5022+6	044A  03      	        INC     BC		; INCREMENT COUNT
+ 823: 5028+12	044B  18C6    	        JR      RCVP5 
+ 824:				
+ 825: 5040+20	044D  ED430610	RCVP10: LD      (1006h),BC	; ESCAPE RECEIVED PRIOR
+ 826: 5060+7	0451  FEE1    	        CP      NA_DONE
+ 827: 5067+10	0453  C2B003  	        JP      NZ,RCV_PKT	; GET DONE?  (THEN FINISHED WITH PACKET)
+ 828: 5077+4	0456  D9      	        EXX			;* YES
+ 829: 5081+4	0457  7B      	        LD      A,E		;*
+ 830: 5085+7	0458  FE0F    	        CP      0Fh		;* CHECK FOR FINAL CRC
+ 831: 5092+10	045A  C2B003  	        JP      NZ,RCV_PKT	;*
+ 832: 5102+4	045D  7A      	        LD      A,D		;*
+ 833: 5106+7	045E  FE1D    	        CP      1Dh		;*
+ 834: 5113+10	0460  C2B003  	        JP      NZ,RCV_PKT	;*
+ 835: 5123+4	0463  AF      	        XOR     A		;* CLEAR A
+ 836: 5127+10	0464  C9      	        RET			;* RETURN (WHY IS THERE NOT ANOTHER EXX?)
+ 837:				
+ 838: 5137+10	0465  D1      	RCVP11: POP     DE		; TIME OUT, EXIT FROM PACKET RECEIVE
+ 839: 5147+10	0466  D1      	        POP     DE
+ 840: 5157+10	0467  C3D601  	        JP      ST_FAIL
+ 841:				
+ 842:				        ; SEND HIGH OR LOW TONE RESPONSE
+ 843:					; AND DISPLAY MESSAGE
+ 844:     -	046A          	RESP_BEEP:	
+ 845: 5167+7	046A  0E50    		LD      C,50h           ; LOW TONE
+ 846: 5174+10	046C  21F6FF  	        LD      HL,BOOT_FLG
+ 847: 5184+12	046F  CB4E    	        BIT     1,(HL)		; SEND SHORT BEEP?
+ 848: 5196+7+5	0471  2802    	        JR      Z,RBEEP1        ; YES
+ 849: 5203+7	0473  0E90    	        LD      C,90h		; NO, HIGH TONE
+ 850: 5210+10	0475  1100CC  	RBEEP1: LD      DE,0CC00h
+ 851: 5220+17	0478  CDA206  	        CALL    BEEP		; SEND TONE C FOR DELAY DE
+ 852: 5237+15	047B  CB8E    	        RES     1,(HL)		; CLEAR VAR A BIT 1
+ 853: 5252+10	047D  210080  	        LD      HL,8000h
+ 854: 5262+10	0480  110100  	        LD      DE,0001h
+ 855: 5272+11	0483  19      	RBEEP2: ADD     HL,DE
+ 856: 5283+7+5	0484  30FD    	        JR      NC,RBEEP2       ; PAUSE
+ 857:					
+ 858: 5290+13	0486  3AF7FF  	        LD      A,(TEST_NUM)	; GET TEST NUMBER
+ 859: 5303+4	0489  4F      	        LD      C,A		; SAVE IN C
+ 860: 5307+7	048A  D605    	        SUB     05h		; HCCA TEST?
+ 861: 5314+7+5	048C  2802    	        JR      Z,RBEEP3        ; SKIP IF HCCA TEST
+ 862: 5321+7	048E  C606    	        ADD     A,06h		; N - 5 + 6 = N + 1
+ 863: 5328+13	0490  32F7FF  	RBEEP3: LD      (TEST_NUM),A	; INC TEST NUMBER IF < 5, ELSE CLEAR IT
+ 864: 5341+13	0493  3AF6FF  	        LD      A,(BOOT_FLG)	; CHECK COLD BOOT FLAG
+ 865: 5354+8	0496  CB47    	        BIT     0,A
+ 866: 5362+10	0498  C2F305  	        JP      NZ,SHOW_MSG	; IF WARM BOOT, SKIP SETTING LEDS
+ 867: 5372+17	049B  CDD104  	        CALL    SET_LED		; SET LEDS 
+ 868: 5389+11	049E  D300    	        OUT     (CTRL_REG),A
+ 869: 5400+13	04A0  32EEFF  	        LD      (CTRL_BITS),A
+ 870: 5413+10	04A3  C3F305  	        JP      SHOW_MSG	; SHOW MESSAGE FOR TEST NUMBER
+ 871:				
+ 872:				        ; FLASH ALERT LED
+ 873:					; TO INDICATE TEST FAILURE AND INCREMENT TEST FAILURE COUNTS
+ 874:     -	04A6          	FLASH_ALERT:	
+ 875: 5423+11	04A6  F5      		PUSH    AF
+ 876: 5434+11	04A7  D5      	        PUSH    DE
+ 877: 5445+11	04A8  E5      	        PUSH    HL
+ 878: 5456+13	04A9  3AF6FF  	        LD      A,(BOOT_FLG)	; CHECK COLD BOOT FLAG
+ 879: 5469+8	04AC  CB47    	        BIT     0,A
+ 880: 5477+7+5	04AE  200A    	        JR      NZ,FLSH1	; SKIP SETTING LEDS IF WARM BOOT
+ 881: 5484+17	04B0  CDD104  	        CALL    SET_LED
+ 882: 5501+7	04B3  F610    	        OR      ALERT		; SET ALERT LED
+ 883: 5508+11	04B5  D300    	        OUT     (CTRL_REG),A
+ 884: 5519+13	04B7  32EEFF  	        LD      (CTRL_BITS),A	; SET LED(S)
+ 885:					
+ 886: 5532+7	04BA  3E03    	FLSH1:  LD      A,03h
+ 887: 5539+13	04BC  32F6FF  	        LD      (BOOT_FLG),A	; UPDATE COLD BOOT FLAG TO INDICATE 1ST BOOT HAS OCCURRED
+ 888: 5552+10	04BF  21F0FF  	        LD      HL,ERR_CNT	; POINT TO ERROR COUNTS
+ 889: 5562+7	04C2  1600    	        LD      D,00h
+ 890: 5569+13	04C4  3AF7FF  	        LD      A,(TEST_NUM)	; GET TEST NUMBER
+ 891: 5582+4	04C7  5F      	        LD      E,A
+ 892: 5586+11	04C8  19      	        ADD     HL,DE		; INDEX INTO ERR_CNT VARIABLES
+ 893: 5597+11	04C9  34      	        INC     (HL)		; INCREMENT THE NUMBER OF ERRORS FOR THAT TEST
+ 894: 5608+7+5	04CA  2001    	        JR      NZ,FLSH2
+ 895: 5615+11	04CC  35      	        DEC     (HL)		; KEEP FROM WRAPPING AROUND TO ZERO
+ 896: 5626+10	04CD  E1      	FLSH2:  POP     HL
+ 897: 5636+10	04CE  D1      	        POP     DE
+ 898: 5646+10	04CF  F1      	        POP     AF
+ 899: 5656+10	04D0  C9      	        RET
+ 900:				
+ 901:				        ; SET THE LEDS BASED ON THE VALUE IN TEST_NUM
+ 902:     -	04D1          	SET_LED:
+ 903: 5666+10	04D1  21DD04  		LD      HL,LED_TBL
+ 904: 5676+13	04D4  3AF7FF  	        LD      A,(TEST_NUM)	; ERROR CODE?
+ 905: 5689+4	04D7  5F      	        LD      E,A
+ 906: 5693+7	04D8  1600    	        LD      D,00h
+ 907: 5700+11	04DA  19      	        ADD     HL,DE
+ 908: 5711+7	04DB  7E      	        LD      A,(HL)		; GET LED ENCODING FROM TABLE
+ 909: 5718+10	04DC  C9      	        RET
+ 910:				
+ 911:     -	04DD          	LED_TBL:
+ 912:     -	04DD  2A      		DEFB    2Ah             ; 0: PAUSE AND CHECK
+ 913:     -	04DE  0A      	        DEFB    0Ah		; 1: CHECK
+ 914:     -	04DF  2A      	        DEFB    2Ah             ; 2: PAUSE AND CHECK
+ 915:     -	04E0  0A      	        DEFB    0Ah		; 3: CHECK
+ 916:     -	04E1  22      	        DEFB    22h             ; 4: PAUSE
+ 917:     -	04E2  02      	        DEFB    02h		; 5: ALL LEDS OFF
+ 918:				
+ 919:				;--------------------------------------------
+ 920:				; Load character patterns in to pattern table
+ 921:				; in VRAM, including custom characters needed
+ 922:				; to display logo
+ 923:				;--------------------------------------------
+ 924:				        ; LOAD VDP WITH FONT DATA
+ 925:     -	04E3          	LOAD_VDP_TABLE:
+ 926: 5728+4	04E3  AF      		XOR     A
+ 927: 5732+11	04E4  D3A1    	        OUT     (VDP_ADDR),A
+ 928: 5743+7	04E6  3E41    	        LD      A,41h           ; WRITE TO VRAM STARTING AT 0100
+ 929: 5750+11	04E8  D3A1    	        OUT     (VDP_ADDR),A
+ 930: 5761+7	04EA  0EA0    	        LD      C,VDP_DATA		
+ 931: 5768+7	04EC  1604    	        LD      D,04h		; 5 PAGES OF DATA
+ 932: 5775+10	04EE  213C08  	        LD      HL,VDP_TABLE
+ 933:     -	04F1          	LD_VDP_LP:  
+ 934: 5785+7	04F1  06FF    		LD      B,0FFh		; 256 BYTES AT A TIME
+ 935: 5792+16+5	04F3  EDB3    	        OTIR
+ 936: 5808+4	04F5  15      	        DEC     D
+ 937: 5812+7+5	04F6  20F9    	        JR      NZ,LD_VDP_LP
+ 938:					
+ 939:					; INITIALIZE VIDEO MEMORY TO SPACES
+ 940:     -	04F8          	CLEAR_SCREEN:	
+ 941: 5819+4	04F8  AF      	        XOR     A
+ 942: 5823+11	04F9  D3A1    	        OUT     (VDP_ADDR),A
+ 943: 5834+7	04FB  3E48    	        LD      A,48h           ; WRITE TO VRAM STARTING AT 0800
+ 944: 5841+11	04FD  D3A1    	        OUT     (VDP_ADDR),A
+ 945: 5852+7	04FF  3E20    	        LD      A,20h           ; BLANK
+ 946: 5859+10	0501  2140FC  	        LD      HL,VRAM
+ 947: 5869+10	0504  110100  	        LD      DE,0001h
+ 948:     -	0507          	CLEAR1:  
+ 949: 5879+11	0507  D3A0    		OUT     (VDP_DATA),A
+ 950: 5890+11	0509  19      	        ADD     HL,DE
+ 951: 5901+7+5	050A  30FB    	        JR      NC,CLEAR1
+ 952:					
+ 953:					; DISPLAY THE NABU LOGO
+ 954:     -	050C          	DSP_LOGO:
+ 955: 5908+7	050C  0607    	        LD      B,07h		; NUMBER OF ROWS
+ 956: 5915+10	050E  21D307  	        LD      HL,LOGO_DATA	
+ 957: 5925+10	0511  110F00  	        LD      DE,000Fh
+ 958: 5935+11	0514  C5      	LOGO1:  PUSH    BC
+ 959: 5946+11	0515  E5      	        PUSH    HL
+ 960: 5957+11	0516  D5      	        PUSH    DE
+ 961: 5968+17	0517  CD6B05  	        CALL    DSP_MSG		; SEND ROW
+ 962: 5985+10	051A  D1      	        POP     DE
+ 963: 5995+10	051B  E1      	        POP     HL
+ 964: 6005+10	051C  C1      	        POP     BC
+ 965: 6015+11	051D  19      	        ADD     HL,DE
+ 966: 6026+8+5	051E  10F4    	        DJNZ    LOGO1
+ 967: 6034+10	0520  C9      	        RET
+ 968:				
+ 969:				        
+ 970:				        ; ENABLE PORT B OF PSG
+ 971:     -	0521          	PSG_PORTB:
+ 972: 6044+7	0521  3E07    		LD      A,PSG_R7_ENABLE
+ 973: 6051+11	0523  D341    	        OUT     (PSG_ADDR),A 
+ 974: 6062+7	0525  3E7F    	        LD      A,7Fh
+ 975: 6069+11	0527  D340    	        OUT     (PSG_DATA),A  
+ 976: 6080+10	0529  C9      	        RET
+ 977:				
+ 978:				        ; WRITE TO KEYBOARD (8251) CONTROL PORT
+ 979:     -	052A          	KB_CTRL:  
+ 980: 6090+11	052A  D391    		OUT     (KB_STAT),A
+ 981: 6101+4	052C  00      	        NOP			; PAUSE
+ 982: 6105+4	052D  00      	        NOP
+ 983: 6109+4	052E  00      	        NOP
+ 984: 6113+4	052F  00      	        NOP
+ 985: 6117+4	0530  00      	        NOP
+ 986: 6121+10	0531  C9      	        RET
+ 987:				
+ 988:					; CHECK FOR PROGRAM LOADED FLAG	(5AA5h AT LOAD_FLAG)
+ 989:     -	0532          	CHK_LOAD:
+ 990: 6131+10	0532  21FEFF  		LD      HL,LOAD_FLG
+ 991: 6141+7	0535  7E      	        LD      A,(HL)
+ 992: 6148+7	0536  D6A5    	        SUB     0A5h
+ 993: 6155+5+6	0538  C0      	        RET     NZ
+ 994: 6160+6	0539  23      	        INC     HL
+ 995: 6166+7	053A  7E      	        LD      A,(HL)
+ 996: 6173+7	053B  D65A    	        SUB     5Ah 		; 0 = PROGRAM IS LOADED
+ 997: 6180+10	053D  C9      	        RET
+ 998:				
+ 999:				        ; SHOW THE PART NUMBER
+1000:     -	053E          	SHOW_PN:  
+1001: 6190+7	053E  0E05    		LD      C,05h
+1002: 6197+11	0540  C5      	        PUSH    BC
+1003: 6208+17	0541  CDF305  	SHOW1:  CALL    SHOW_MSG	; SHOW ADAPTOR ERROR IF IT OCCURRED
+1004: 6225+10	0544  C1      	        POP     BC
+1005: 6235+4	0545  0D      	        DEC     C
+1006: 6239+10	0546  FA4C05  	        JP      M,SHOW2		; SHOW_MSG RETURNED ZERO?
+1007: 6249+11	0549  C5      	        PUSH    BC		; NO, KEEP GOING
+1008: 6260+12	054A  18F5    	        JR      SHOW1
+1009:				
+1010: 6272+13	054C  3AEFFF  	SHOW2:  LD      A,(POST_FLG)
+1011: 6285+4	054F  B7      	        OR      A
+1012: 6289+5+6	0550  C8      	        RET     Z		; ERROR?
+1013: 6294+16	0551  2AD007  	        LD      HL,(ROM_STR)	; YES, SHOW ROM PART NUMBER
+1014: 6310+16	0554  22F9FF  	        LD      (DSP_STR),HL	; 
+1015: 6326+13	0557  3AD207  	        LD      A,(ROM_STR+2)	; 
+1016: 6339+13	055A  32FBFF  	        LD      (DSP_STR+2),A	; 
+1017: 6352+20	055D  ED5BFC0F	        LD      DE,(ROMPN)	; MOVE ROM PART NUMBER TO DISPLAY DIGIT STRING
+1018: 6372+20	0561  ED53FCFF	        LD      (DSP_STR+3),DE	; DSP_STR = 02 5A 03 36 30
+1019: 6392+10	0565  21F9FF  	        LD      HL,DSP_STR
+1020: 6402+10	0568  C36B05  	        JP      DSP_MSG		; DISPLAY ROM PART NUMBER ON SCREEN
+1021:				
+1022:				        ; SEND STRING TO VDP
+1023:     -	056B          	DSP_MSG:  
+1024: 6412+7	056B  46      		LD      B,(HL)		; GET COUNT OF CHARACTERS IN MESSAGE
+1025: 6419+6	056C  23      	        INC     HL
+1026: 6425+7	056D  7E      	        LD      A,(HL)
+1027: 6432+11	056E  D3A1    	        OUT     (VDP_ADDR),A	; LOWER BYTE OF VDP RAM ADDRESS
+1028: 6443+6	0570  23      	        INC     HL
+1029: 6449+7	0571  7E      	        LD      A,(HL)
+1030: 6456+7	0572  C648    	        ADD     A,48h           ; 
+1031: 6463+11	0574  D3A1    	        OUT     (VDP_ADDR),A	; UPPER BYTE OF VDP RAM ADDRESS
+1032: 6474+6	0576  23      	        INC     HL
+1033: 6480+7	0577  0EA0    	        LD      C,VDP_DATA
+1034: 6487+16+5	0579  EDB3    	        OTIR			; WRITE DATA TO VDP RAM
+1035: 6503+10	057B  C9      	        RET
+1036:				
+1037:					; GET CHANNEL HEX CODE FROM USER - 4 DIGITS AND <CR> OR <YES>
+1038:					; DE = VDP ADDRESS
+1039:					; HL = STORE ADDRESS
+1040:					; B = NUMBER OF DIGITS + 1
+1041:     -	057C          	GET_HEX:  
+1042: 6513+7	057C  0605    		LD      B,05h		; NUMBER OF DIGITS TO RECEIVE + 1
+1043:     -	057E          	GETDIG:  
+1044: 6520+11	057E  DB91    		IN      A,(KB_STAT)
+1045: 6531+8	0580  CB4F    	        BIT     1,A
+1046: 6539+7+5	0582  28FA    	        JR      Z,GETDIG	; WAIT FOR KEY
+1047: 6546+11	0584  DB90    	        IN      A,(KB_DATA)	; GET KEY
+1048: 6557+11	0586  F5      	        PUSH    AF		; SAVE A COPY ON THE STACK
+1049: 6568+7	0587  D630    	        SUB     30h
+1050: 6575+7+5	0589  3837    	        JR      C,GETHX5        ; < '0' CONTROL CHAR?
+1051: 6582+7	058B  FE0A    	        CP      0Ah
+1052: 6589+7+5	058D  3814    	        JR      C,GETHX2        ; > '9'
+1053: 6596+7	058F  D607    	        SUB     07h		; YES, CONVERT TO HEX A-F
+1054: 6603+7	0591  FE0A    	        CP      0Ah
+1055: 6610+7+5	0593  382D    	        JR      C,GETHX5        ; NOT A-F?
+1056: 6617+7	0595  FE10    	        CP      10h		
+1057: 6624+7+5	0597  380A    	        JR      C,GETHX2        ; > F?
+1058: 6631+7	0599  D620    	        SUB     20h             ; YES, LOWER CASE?
+1059: 6638+7	059B  FE0A    	        CP      0Ah
+1060: 6645+7+5	059D  3823    	        JR      C,GETHX5        ; a-f?
+1061: 6652+7	059F  FE10    	        CP      10h
+1062: 6659+7+5	05A1  301F    	        JR      NC,GETHX5       ; NO, CHECK FOR OTHER CHARACTERS
+1063: 6666+4	05A3  4F      	GETHX2: LD      C,A		; SAVE IN C
+1064: 6670+4	05A4  78      	        LD      A,B
+1065: 6674+4	05A5  B7      	        OR      A
+1066: 6678+7+5	05A6  2003    	        JR      NZ,GETHX3       ; DONE?
+1067: 6685+10	05A8  F1      	        POP     AF		; CLEAN UP STACK
+1068: 6695+12	05A9  18D3    	        JR      GETDIG          ; GET ANOTHER KEY
+1069:				
+1070: 6707+4	05AB  7B      	GETHX3: LD      A,E		; VALID KEY?
+1071: 6711+11	05AC  D3A1    	        OUT     (VDP_ADDR),A
+1072: 6722+4	05AE  7A      	        LD      A,D
+1073: 6726+7	05AF  F648    	        OR      48h
+1074: 6733+11	05B1  D3A1    	        OUT     (VDP_ADDR),A
+1075: 6744+10	05B3  F1      	        POP     AF
+1076: 6754+7	05B4  FE5B    	        CP      5Bh             ; LOWER CASE ?
+1077: 6761+7+5	05B6  3802    	        JR      C,GETHX4	
+1078: 6768+7	05B8  D620    	        SUB     20h             ; YES, CHANGE TO UPPER CASE
+1079: 6775+11	05BA  D3A0    	GETHX4: OUT     (VDP_DATA),A	; ECHO CHARACTER TO SCREEN
+1080: 6786+7	05BC  71      	        LD      (HL),C		; STORE IN MEMORY
+1081: 6793+6	05BD  23      	        INC     HL		; INCREMENT ADDRESSES
+1082: 6799+6	05BE  13      	        INC     DE
+1083: 6805+4	05BF  05      	        DEC     B		; DECREMENT COUNT
+1084: 6809+12	05C0  18BC    	        JR      GETDIG		; GET ANOTHER CHARACTER
+1085:				
+1086: 6821+10	05C2  F1      	GETHX5: POP     AF
+1087: 6831+7	05C3  FE0D    	        CP      0Dh
+1088: 6838+7+5	05C5  2804    	        JR      Z,GETHX6	; <CR>?
+1089: 6845+7	05C7  FEE7    	        CP      0E7h
+1090: 6852+7+5	05C9  2005    	        JR      NZ,DEL_CHAR	; <YES> KEY?
+1091: 6859+4	05CB  78      	GETHX6: LD      A,B
+1092: 6863+4	05CC  B7      	        OR      A
+1093: 6867+7+5	05CD  20AF    	        JR      NZ,GETDIG	; DONE ?
+1094: 6874+10	05CF  C9      	        RET
+1095:				
+1096:				
+1097:					; DELETE CHARACTER ON SCREEN AND BACK UP SCREEN POSITION
+1098:     -	05D0          	DEL_CHAR:  
+1099: 6884+7	05D0  FE7F    		CP      7Fh             ; DELETE KEY?
+1100: 6891+7+5	05D2  2804    	        JR      Z,DELCH1        
+1101: 6898+7	05D4  FEE1    	        CP      0E1h		; BACK ARROW?
+1102: 6905+7+5	05D6  20A6    	        JR      NZ,GETDIG	; NO, IGNORE CHARACTER AND GET ANOTHER
+1103: 6912+4	05D8  78      	DELCH1: LD      A,B		; GET CHARACTER COUNT
+1104: 6916+7	05D9  FE05    	        CP      05h		; AT START?
+1105: 6923+7+5	05DB  28A1    	        JR      Z,GETDIG        ; YES, IGNORE
+1106: 6930+6	05DD  1B      	        DEC     DE		; NO, BACK UP POINTERS
+1107: 6936+6	05DE  2B      	        DEC     HL
+1108: 6942+4	05DF  04      	        INC     B
+1109: 6946+4	05E0  7B      	        LD      A,E
+1110: 6950+11	05E1  D3A1    	        OUT     (VDP_ADDR),A
+1111: 6961+4	05E3  7A      	        LD      A,D
+1112: 6965+7	05E4  F648    	        OR      48h             
+1113: 6972+11	05E6  D3A1    	        OUT     (VDP_ADDR),A	; POINT TO CHARACTER ON SCREEN
+1114: 6983+7	05E8  3E20    	        LD      A,20h           
+1115: 6990+11	05EA  D3A0    	        OUT     (VDP_DATA),A	; AND BLANK IT OUT
+1116: 7001+12	05EC  1890    	        JR      GETDIG          ; CONTINUE ON
+1117:				
+1118:					; VALID CHANNEL CODE ACKNOWLEDGEMENT
+1119:     -	05EE          	EXP_CONF:  
+1120: 7013+7	05EE  0EE4    		LD      C,NA_CONFIRM
+1121: 7020+10	05F0  C36C03  	        JP      CHK_HCCA	; EXPECT CONFIRMATION
+1122:				
+1123:				
+1124:					; OUTPUT HEX CODE TO SCREEN OR ERROR MESSAGES
+1125:					; C = ERROR COUNT OFFSET
+1126:     -	05F3          	SHOW_MSG:  
+1127: 7030+13	05F3  3AEFFF  		LD      A,(POST_FLG)
+1128: 7043+4	05F6  B7      	        OR      A
+1129: 7047+7+5	05F7  2823    	        JR      Z,CHK_ERR	; POST ERROR?
+1130:					
+1131: 7054+7	05F9  3E02    	        LD      A,02h		; YES, 
+1132: 7061+13	05FB  32F9FF  	        LD      (DSP_STR),A	; 2 CHARACTERS TO DISPLAY
+1133: 7074+10	05FE  112800  	        LD      DE,40		; DE = 40 COLUMNS PER ROW
+1134: 7084+4	0601  41      	        LD      B,C
+1135: 7088+4	0602  04      	        INC     B
+1136: 7092+10	0603  212B01  	        LD      HL,012Bh	; MIDDLE COLUMN OF LINE 8
+1137: 7102+11	0606  19      	SHMS1:  ADD     HL,DE
+1138: 7113+8+5	0607  10FD    	        DJNZ    SHMS1		; OFFSET ROW
+1139: 7121+16	0609  22FAFF  	        LD      (DSP_STR+1),HL	; ADDRESS IN VAR_E,VAR_F
+1140: 7137+10	060C  21F0FF  	        LD      HL,ERR_CNT
+1141: 7147+11	060F  09      	        ADD     HL,BC		; BC = ROW OFFSET
+1142: 7158+10	0610  11FCFF  	        LD      DE,DSP_STR+3	; POINT TO STRING MEMORY START
+1143: 7168+17	0613  CD3306  	        CALL    TOASCII		; CONVERT TO ASCII HEX
+1144: 7185+10	0616  21F9FF  	        LD      HL,DSP_STR	; STRING TO DISPLAY AT DSP_STR
+1145: 7195+10	0619  C36B05  	        JP      DSP_MSG
+1146:				
+1147:     -	061C          	CHK_ERR:  			; CHECK ERROR COUNTS
+1148: 7205+10	061C  21F0FF  		LD      HL,ERR_CNT
+1149: 7215+7	061F  0600    	        LD      B,00h
+1150: 7222+11	0621  09      	        ADD     HL,BC
+1151: 7233+7	0622  7E      	        LD      A,(HL)		; GET ERROR COUNT
+1152: 7240+4	0623  B7      	        OR      A
+1153: 7244+5+6	0624  C8      	        RET     Z		; CHECK IF ERROR COUNT IS > 0
+1154:					
+1155: 7249+10	0625  213A07  	        LD      HL,ERR_MSGS
+1156: 7259+10	0628  111300  	        LD      DE,0013h	; LENGTH OF EACH ERROR MESSAGE
+1157: 7269+4	062B  0C      	        INC     C
+1158: 7273+4	062C  0D      	CHKER1: DEC     C
+1159: 7277+10	062D  CA6B05  	        JP      Z,DSP_MSG	; SHOW ERROR MESSAGE
+1160: 7287+11	0630  19      	        ADD     HL,DE		; POINT TO NEXT ERROR MESSAGE
+1161: 7298+12	0631  18F9    	        JR      CHKER1
+1162:				
+1163:				
+1164:				        ; CONVERT BYTE IN (HL) TO ASCII PAIR, STORE IN (DE)
+1165:     -	0633          	TOASCII:
+1166: 7310+7	0633  7E      		LD      A,(HL)
+1167: 7317+8	0634  CB3F    	        SRL     A
+1168: 7325+8	0636  CB3F    	        SRL     A
+1169: 7333+8	0638  CB3F    	        SRL     A
+1170: 7341+8	063A  CB3F    	        SRL     A
+1171: 7349+17	063C  CD4306  	        CALL    HEXTOASC
+1172: 7366+6	063F  13      	        INC     DE
+1173: 7372+7	0640  7E      	        LD      A,(HL)
+1174: 7379+7	0641  E60F    	        AND     0Fh
+1175:				
+1176:				        ; CONVERT 4 BIT NIBBLE TO ASCII
+1177:     -	0643          	HEXTOASC:  
+1178: 7386+7	0643  C630    		ADD     A,'0'
+1179: 7393+7	0645  FE3A    	        CP      3Ah
+1180: 7400+7+5	0647  3802    	        JR      C,HEX1		; IF > 9, CONVERT TO A-F
+1181: 7407+7	0649  C607    	        ADD     A,07h
+1182: 7414+7	064B  12      	HEX1:   LD      (DE),A		; STORE IN (DE)
+1183: 7421+10	064C  C9      	        RET
+1184:				
+1185:				
+1186:				        ; ENABLE INTERRUPT MASK FROM REGISTER C
+1187:     -	064D          	SET_INT_MASK:
+1188: 7431+7	064D  3E0E    		LD      A,PSG_R14_INT_MASK
+1189: 7438+11	064F  D341    	        OUT     (PSG_ADDR),A	     ; ENABLE OUTPUT REGISTER
+1190: 7449+4	0651  79      	        LD      A,C
+1191: 7453+11	0652  D340    	        OUT     (PSG_DATA),A 	     ; SET MASK
+1192: 7464+7	0654  3E0F    	        LD      A,PSG_R15_STATUS
+1193: 7471+11	0656  D341    	        OUT     (PSG_ADDR),A
+1194: 7482+11	0658  DB40    	        IN      A,(PSG_DATA)         ; READ INTERRUPT STATUS
+1195: 7493+8	065A  CB47    	        BIT     0,A
+1196: 7501+10	065C  C9      	        RET
+1197:				
+1198:				
+1199:					; USE ALTERNATE REGISTER SET TO CALCULATE THE CRC
+1200:					; DE' IS THE CRC, BC' IS THE INDEX TO THE TABLE
+1201:					; NOTE: XOR CRC WITH 0FFFFh TO GET THE 2 BYTE CRC AT END OF PACKET
+1202:     -	065D          	CALC_CRC:  
+1203: 7511+11	065D  F5      		PUSH    AF
+1204: 7522+4	065E  D9      	        EXX			;* SWAP BC, DE AND HL WITH ALTERNATES
+1205: 7526+4	065F  AA      	        XOR     D		;* ACC = ACC XOR D'
+1206: 7530+4	0660  4F      	        LD      C,A		;*
+1207: 7534+7	0661  0600    	        LD      B,00h		;* BC' = ACC
+1208: 7541+8	0663  CB21    	        SLA     C		;*
+1209: 7549+8	0665  CB10    	        RL      B		;* BC' = BC' * 2
+1210: 7557+4	0667  53      	        LD      D,E		;* D' = E'
+1211: 7561+14	0668  FD21740B	        LD      IY,CRC_TBL	;* POINT TO CRC_TBL
+1212: 7575+15	066C  FD09    	        ADD     IY,BC		;* INDEX INTO TABLE BY BC'*2
+1213: 7590+19	066E  FD7E00  	        LD      A,(IY+00h)      ;* GET FIRST BYTE INTO E
+1214: 7609+4	0671  5F      	        LD      E,A		;*
+1215: 7613+19	0672  FD7E01  	        LD      A,(IY+01h)	;*
+1216: 7632+4	0675  AA      	        XOR     D		;* XOR SECOND BYTE WITH D'
+1217: 7636+4	0676  57      	        LD      D,A		;* AND PUT BACK IN D'
+1218: 7640+4	0677  D9      	        EXX
+1219: 7644+10	0678  F1      	        POP     AF
+1220: 7654+10	0679  C9      	        RET
+1221:				
+1222:				
+1223:				        ; WAIT FOR CHARACTER FROM HCCA
+1224:     -	067A          	WAIT_FOR_HCCA:
+1225: 7664+10	067A  11FFFF  		LD      DE,0FFFFh
+1226: 7674+17	067D  CD6303  	WAIT1:  CALL    DEC_AND_TEST_DE		; TIMEOUT COUNTER
+1227: 7691+5+6	0680  C0      	        RET     NZ
+1228: 7696+7	0681  0E80    	        LD      C,INT_HRCV
+1229: 7703+17	0683  CD4D06  	        CALL    SET_INT_MASK		; ENABLE HCCA RECEIVE INTERRUPT
+1230: 7720+7+5	0686  28F5    	        JR      Z,WAIT1			; EXIT WHEN INTERRUPT OCCURS
+1231: 7727+4	0688  AF      	        XOR     A
+1232: 7731+10	0689  C9      	        RET
+1233:				
+1234:					; INITIALIZE PSG
+1235:     -	068A          	INIT_PSG:
+1236: 7741+7	068A  3E07    		LD      A,PSG_R7_ENABLE
+1237: 7748+11	068C  D341    	        OUT     (PSG_ADDR),A 
+1238: 7759+7	068E  3E7E    	        LD      A,7Eh           
+1239: 7766+11	0690  D340    	        OUT     (PSG_DATA),A         ; ENABLE PORT B
+1240: 7777+7	0692  3E08    	        LD      A,08h
+1241: 7784+11	0694  D341    	        OUT     (PSG_ADDR),A
+1242: 7795+7	0696  3E06    	        LD      A,06h
+1243: 7802+11	0698  D340    	        OUT     (PSG_DATA),A         ; AMPLITUDE 6
+1244: 7813+7	069A  3E01    	        LD      A,01h
+1245: 7820+11	069C  D341    	        OUT     (PSG_ADDR),A         ; 
+1246: 7831+4	069E  3D      	        DEC     A
+1247: 7835+11	069F  D340    	        OUT     (PSG_DATA),A         ; TONE A UPPER BYTE = 0
+1248: 7846+10	06A1  C9      	        RET
+1249:				
+1250:				
+1251:				        ; SEND TONE IN C OUT PSG FOR DURATION IN DE
+1252:     -	06A2          	BEEP:
+1253: 7856+11	06A2  F5      		PUSH    AF
+1254: 7867+11	06A3  E5      	        PUSH    HL
+1255: 7878+11	06A4  C5      	        PUSH    BC
+1256: 7889+11	06A5  D5      	        PUSH    DE
+1257: 7900+17	06A6  CD8A06  	        CALL    INIT_PSG
+1258: 7917+4	06A9  AF      	        XOR     A
+1259: 7921+11	06AA  D341    	        OUT     (PSG_ADDR),A
+1260: 7932+4	06AC  79      	        LD      A,C
+1261: 7936+11	06AD  D340    	        OUT     (PSG_DATA),A	; SET TONEA  = C
+1262:					
+1263: 7947+10	06AF  210100  	        LD      HL,0001h
+1264: 7957+7	06B2  0604    	        LD      B,04h
+1265: 7964+4	06B4  EB      	        EX      DE,HL
+1266: 7968+11	06B5  19      	BEEP1:  ADD     HL,DE
+1267: 7979+7+5	06B6  30FD    	        JR      NC,BEEP1 
+1268: 7986+10	06B8  E1      	        POP     HL
+1269: 7996+11	06B9  E5      	        PUSH    HL
+1270: 8007+8+5	06BA  10F9    	        DJNZ    BEEP1
+1271: 8015+7	06BC  3E07    	        LD      A,PSG_R7_ENABLE
+1272: 8022+11	06BE  D341    	        OUT     (PSG_ADDR),A
+1273: 8033+7	06C0  3E7F    	        LD      A,7Fh
+1274: 8040+11	06C2  D340    	        OUT     (PSG_DATA),A	; PORT B ENABLE, TONE OFF
+1275: 8051+10	06C4  D1      	        POP     DE
+1276: 8061+10	06C5  C1      	        POP     BC
+1277: 8071+10	06C6  E1      	        POP     HL
+1278: 8081+10	06C7  F1      	        POP     AF
+1279: 8091+10	06C8  C9      	        RET
+1280:				
+1281:     -	06C9          	VDP_INIT_TBL:
+1282:     -	06C9  F5      		DEFB    0F5h		; REG 7 = WHITE ON LIGHT BLUE
+1283:     -	06CA  00      	        DEFB    00h		; REG 6 = SPRITE BASE ADDRESS = 0000h
+1284:     -	06CB  00      	        DEFB    00h		; REG 5 = SPRITE ATTR ADDRESS = 0000h
+1285:     -	06CC  00      	        DEFB    00h		; REG 4 = PATTERN GENERATOR ADDRESS = 0000h
+1286:     -	06CD  00      	        DEFB    00h		; REG 3 = COLOR TABLE BASE ADDRESS = 0000h
+1287:     -	06CE  02      	        DEFB    02h		; REG 2 = NAME TABLE ADDRESS = 0800h
+1288:     -	06CF  D0      	        DEFB    0D0h		; REG 1 = 4K RAM, ENABLE DISPLAY, ENABLE INT, TEXT MODE
+1289:     -	06D0  00      	        DEFB    00h		; REG 0 = TEXT MODE
+1290:					
+1291:				; MESSAGE STRINGS ARE STORED AS:
+1292:				; CHARACTER_COUNT, VDP RAM LSB, VDP RAM MSB, STRING
+1293:					
+1294:     -	06D1          	MSG_CHAN:	
+1295:     -	06D1  21AB02  	        DEFB	21h,0ABh,02h
+1296:     -	06D4  504C4541	        DEFB    "PLEASE TYPE IN CHANNEL CODE      "
+	              53452054
+	              59504520
+	              494E2043
+	              48414E4E
+	              454C2043
+	              4F444520
+	              20202020
+	              20
+1297:     -	06F5          	MSG_WRONG:
+1298:     -	06F5  342103  		DEFB	34h,21h,03h
+1299:     -	06F8  53454520		DEFB	"SEE "
+1300:     -	06FC  22      	        DEFB    22h             ; '"'
+1301:     -	06FD  49462053	        DEFB    "IF SOMETHING GOES WRONG"
+	              4F4D4554
+	              48494E47
+	              20474F45
+	              53205752
+	              4F4E47
+1302:     -	0714  22      	        DEFB    22h             ; '"'
+1303:     -	0715  20494E20	        DEFB    " IN        OWNERS GUIDE"
+	              20202020
+	              2020204F
+	              574E4552
+	              53204755
+	              494445
+1304:     -	072C          	MSG_WAIT:	
+1305:     -	072C  0B2103  	        DEFB    0Bh,21h,03h
+1306:     -	072F  504C4541	        DEFB    "PLEASE WAIT"
+	              53452057
+	              414954
+1307:					
+1308:     -	073A          	ERR_MSGS:	
+1309:     -	073A          	MSG_ROM_FAIL:			; ERROR 0
+1310:     -	073A  104901  		DEFB	10h,49h,01h
+1311:     -	073D  524F4D20	        DEFB    "ROM FAILURE     "
+	              4641494C
+	              55524520
+	              20202020
+1312:     -	074D          	MSG_VID_FAIL:			; ERROR 1
+1313:     -	074D  107101  	        DEFB    10h,71h,01h
+1314:     -	0750  56494445	        DEFB    "VIDEO FAILURE   "
+	              4F204641
+	              494C5552
+	              45202020
+1315:     -	0760          	MSG_RAM_FAIL:			; ERROR 2
+1316:     -	0760  109901  	        DEFB    10h,99h,01h
+1317:     -	0763  52414D20	        DEFB    "RAM FAILURE     "
+	              4641494C
+	              55524520
+	              20202020
+1318:     -	0773          	MSG_PSG_FAIL:			; ERROR 3
+1319:     -	0773  10C101  	        DEFB    10h,0C1h,01h
+1320:     -	0776  534F554E	        DEFB    "SOUND FAILURE   "
+	              44204641
+	              494C5552
+	              45202020
+1321:     -	0786          	MSG_KB_FAIL:			; ERROR 4
+1322:     -	0786  10E901  	        DEFB    10h,0E9h,01h
+1323:     -	0789  4B455942	        DEFB    "KEYBOARD FAILURE"
+	              4F415244
+	              20464149
+	              4C555245
+1324:     -	0799          	MSG_ADP_FAIL:			; ERROR 5
+1325:     -	0799  101102  	        DEFB    10h,11h,02h
+1326:     -	079C  41444150	        DEFB    "ADAPTOR FAILURE "
+	              544F5220
+	              4641494C
+	              55524520
+1327:     -	07AC          	MSG_RETYPE:
+1328:     -	07AC  21AB02  		DEFB	21h,0ABh,02h
+1329:     -	07AF  52452D54	        DEFB    "RE-TYPE CHANNEL CODE             "
+	              59504520
+	              4348414E
+	              4E454C20
+	              434F4445
+	              20202020
+	              20202020
+	              20202020
+	              20
+1330:				
+1331:				; COUNT AND ADDRESS FOR ROM PART NUMBER ON SCREEN
+1332:     -	07D0          	ROM_STR:  
+1333:     -	07D0  025A03  		DEFB    02h,5Ah,03h
+1334:				; LOGO DATA USING RE-MAPPED CHARACTERS
+1335:     -	07D3          	LOGO_DATA:
+1336:     -	07D3  0C0D00  		DEFB    0Ch,0Dh,00h
+1337:     -	07D6  5B5C5C5C	        DEFB    "[\\\\\\\\\\]"		; ROW 1
+	              5C5C5C5C
+	              5C5C5C5D
+1338:     -	07E2  0C3500  	        DEFB	0Ch,35h,00h
+1339:     -	07E5  5E5E5E5E	        DEFB    "^^^^^^^^^^^^"		; ROW 2
+	              5E5E5E5E
+	              5E5E5E5E
+1340:     -	07F1  0C5D00  	        DEFB    0Ch,5Dh,00h
+1341:     -	07F4  5F606162	        DEFB    "_`abcdefghij"		; ROW 3
+	              63646566
+	              6768696A
+1342:     -	0800  0C8500  	        DEFB    0Ch,85h,00h
+1343:     -	0803  6B6C6D6E	        DEFB    "klmnopqrstuv"		; ROW 4
+	              6F707172
+	              73747576
+1344:     -	080F  0CAD00  	        DEFB    0Ch,0ADh,00h
+1345:     -	0812  7778797A	        DEFB    "wxyz{|}~"		; ROW 5
+	              7B7C7D7E
+1346:     -	081A  7F808182	        DEFB    7Fh,80h,81h,82h
+1347:     -	081E  0CD500  	        DEFB    0Ch,0D5h,00h
+1348:     -	0821  83838383	        DEFB    83h,83h,83h,83h,83h,83h,83h,83h,83h,83h,83h,83h ; ROW 6
+	              83838383
+	              83838383
+1349:     -	082D  0CFD00  	        DEFB    0Ch,0FDh,00h
+1350:     -	0830  84858585	        DEFB    84h,85h,85h,85h,85h,85h,85h,85h,85h,85h,85h,86h
+	              85858585
+	              85858586
+1351:					
+1352:					; VDP CHARACTER TABLE STARTING AT 0100h
+1353:     -	083C          	VDP_TABLE:
+1354:     -	083C  00000000	        DEFB    00h,00h,00h,00h,00h,00h,00h,00h ; SPACE 20h
+	              00000000
+1355:     -	0844  10101010	        DEFB    10h,10h,10h,10h,10h,00h,10h,00h ; !
+	              10001000
+1356:     -	084C  28280000	        DEFB    28h,28h,00h,00h,00h,00h,00h,00h ; "
+	              00000000
+1357:     -	0854  28287C28		DEFB    28h,28h,7Ch,28h,7Ch,28h,28h,00h ; #
+	              7C282800
+1358:     -	085C  38545038	        DEFB    38h,54h,50h,38h,14h,54h,38h,00h ; $
+	              14543800
+1359:     -	0864  60640810	        DEFB    60h,64h,08h,10h,20h,6Ch,0Ch,00h ; %
+	              206C0C00
+1360:     -	086C  10282830	        DEFB    10h,28h,28h,30h,50h,4Ch,7Ch,00h ; &
+	              504C7C00
+1361:     -	0874  30301060	        DEFB    30h,30h,10h,60h,00h,00h,00h,00h ; '
+	              00000000
+1362:     -	087C  10204040	        DEFB    10h,20h,40h,40h,40h,20h,10h,00h ; (
+	              40201000
+1363:     -	0884  40201010	        DEFB    40h,20h,10h,10h,10h,20h,40h,00h ; )
+	              10204000
+1364:     -	088C  0054387C	        DEFB    00h,54h,38h,7Ch,38h,54h,10h,00h ; *
+	              38541000
+1365:     -	0894  00001010	        DEFB    00h,00h,10h,10h,7Ch,10h,10h,00h ; +
+	              7C101000
+1366:     -	089C  00000000	        DEFB    00h,00h,00h,00h,30h,30h,10h,60h ; ,
+	              30301060
+1367:     -	08A4  00000000	        DEFB    00h,00h,00h,00h,38h,00h,00h,00h ; -
+	              38000000
+1368:     -	08AC  00000000	        DEFB    00h,00h,00h,00h,00h,18h,18h,00h ; .
+	              00181800
+1369:     -	08B4  04040818	        DEFB    04h,04h,08h,18h,30h,20h,40h,00h ; /
+	              30204000
+1370:     -	08BC  38444C54	        DEFB    38h,44h,4Ch,54h,64h,44h,38h,00h ; 0
+	              64443800
+1371:     -	08C4  10301010	        DEFB    10h,30h,10h,10h,10h,10h,38h,00h ; 1
+	              10103800
+1372:     -	08CC  30484818	        DEFB    30h,48h,48h,18h,30h,20h,78h,00h ; 2
+	              30207800
+1373:     -	08D4  30480810	        DEFB    30h,48h,08h,10h,08h,48h,30h,00h ; 3
+	              08483000
+1374:     -	08DC  10303050	        DEFB    10h,30h,30h,50h,50h,78h,10h,00h ; 4
+	              50781000
+1375:     -	08E4  78405068	        DEFB    78h,40h,50h,68h,08h,48h,30h,00h ; 5
+	              08483000
+1376:     -	08EC  30284070	        DEFB    30h,28h,40h,70h,68h,48h,30h,00h ; 6
+	              68483000
+1377:     -	08F4  78480810	        DEFB    78h,48h,08h,10h,30h,20h,20h,00h ; 7
+	              30202000
+1378:     -	08FC  30484830	        DEFB    30h,48h,48h,30h,48h,48h,30h,00h ; 8
+	              48483000
+1379:     -	0904  30484838	        DEFB    30h,48h,48h,38h,08h,50h,30h,00h ; 9
+	              08503000
+1380:     -	090C  00003030	        DEFB    00h,00h,30h,30h,00h,30h,30h,00h ; :
+	              00303000
+1381:     -	0914  00003030	        DEFB    00h,00h,30h,30h,00h,30h,10h,40h ; ;
+	              00301040
+1382:     -	091C  08102040	        DEFB    08h,10h,20h,40h,20h,10h,08h,00h ; <
+	              20100800
+1383:     -	0924  00000078	        DEFB    00h,00h,00h,78h,00h,78h,00h,00h ; =
+	              00780000
+1384:     -	092C  40201008	        DEFB    40h,20h,10h,08h,10h,20h,40h,00h ; >
+	              10204000
+1385:     -	0934  30484810	        DEFB    30h,48h,48h,10h,20h,20h,00h,20h ; ?
+	              20200020
+1386:     -	093C  40380438	        DEFB    40h,38h,04h,38h,08h,38h,48h,34h ; @
+	              08384834
+1387:     -	0944  10284444	        DEFB    10h,28h,44h,44h,7Ch,44h,44h,00h ; A
+	              7C444400
+1388:     -	094C  78444478	        DEFB    78h,44h,44h,78h,44h,44h,78h,00h ; B
+	              44447800
+1389:     -	0954  38444040	        DEFB    38h,44h,40h,40h,40h,44h,38h,00h ; C
+	              40443800
+1390:     -	095C  70484444	        DEFB    70h,48h,44h,44h,44h,48h,70h,00h ; D
+	              44487000
+1391:     -	0964  7C404070	        DEFB    7Ch,40h,40h,70h,40h,40h,7Ch,00h ; E
+	              40407C00
+1392:     -	096C  7C404070	        DEFB    7Ch,40h,40h,70h,40h,40h,40h,00h ; F
+	              40404000
+1393:     -	0974  38444440		DEFB    38h,44h,44h,40h,5Ch,44h,3Ch,00h ; G
+	              5C443C00
+1394:     -	097C  4444447C	        DEFB    44h,44h,44h,7Ch,44h,44h,44h,00h ; H
+	              44444400
+1395:     -	0984  38101010	        DEFB    38h,10h,10h,10h,10h,10h,38h,00h ; I
+	              10103800
+1396:     -	098C  1C080808	        DEFB    1Ch,08h,08h,08h,48h,48h,30h,00h ; J
+	              48483000
+1397:     -	0994  48485070	        DEFB    48h,48h,50h,70h,50h,48h,4Ch,00h ; K
+	              50484C00
+1398:     -	099C  40404040	        DEFB    40h,40h,40h,40h,40h,40h,7Ch,00h ; L
+	              40407C00
+1399:     -	09A4  6C545444	        DEFB    6Ch,54h,54h,44h,44h,44h,44h,00h ; M
+	              44444400
+1400:     -	09AC  44646454	        DEFB    44h,64h,64h,54h,54h,4Ch,4Ch,00h ; N
+	              544C4C00
+1401:     -	09B4  38444444	        DEFB    38h,44h,44h,44h,44h,44h,38h,00h ; O
+	              44443800
+1402:     -	09BC  78444478	        DEFB    78h,44h,44h,78h,40h,40h,40h,00h ; P
+	              40404000
+1403:     -	09C4  38444444	        DEFB    38h,44h,44h,44h,54h,48h,34h,00h ; Q
+	              54483400
+1404:     -	09CC  78484878	        DEFB    78h,48h,48h,78h,50h,48h,4Ch,00h ; R
+	              50484C00
+1405:     -	09D4  38444038	        DEFB    38h,44h,40h,38h,04h,44h,38h,00h ; S
+	              04443800
+1406:     -	09DC  7C101010	        DEFB    7Ch,10h,10h,10h,10h,10h,10h,00h ; T
+	              10101000
+1407:     -	09E4  44444444	        DEFB    44h,44h,44h,44h,44h,44h,38h,00h ; U
+	              44443800
+1408:     -	09EC  44444428	        DEFB    44h,44h,44h,28h,28h,28h,10h,00h ; V
+	              28281000
+1409:     -	09F4  44444444	        DEFB    44h,44h,44h,44h,54h,54h,28h,00h ; W
+	              54542800
+1410:     -	09FC  44442810	        DEFB    44h,44h,28h,10h,28h,44h,44h,00h ; X
+	              28444400
+1411:     -	0A04  44444438	        DEFB    44h,44h,44h,38h,10h,10h,10h,00h ; Y
+	              10101000
+1412:     -	0A0C  7C0C1810	        DEFB    7Ch,0Ch,18h,10h,20h,60h,7Ch,00h ; Z
+	              20607C00
+1413:				; 
+1414:				; 
+1415:				; REMAPPED CHARACTERS FOR NABU logo
+1416:     -	0A14  0000003C	        DEFB    00h,00h,00h,3Ch,7Ch,00h,00h,0FCh ; [ 5Bh     ; top left corner
+	              7C0000FC
+1417:     -	0A1C  FC0000FC	        DEFB    0FCh,00h,00h,0FCh,0FCh,00h,00h,0FCh ; \ 5Ch     ; top middle 10
+	              FC0000FC
+1418:     -	0A24  000000F0	        DEFB    00h,00h,00h,0F0h,0F8h,00h,00h,0FCh ; ] 5Dh     ; top right corner
+	              F80000FC
+1419:     -	0A2C  FCFC00FC	        DEFB    0FCh,0FCh,00h,0FCh,0FCh,0FCh,0FCh,00h ; ^ 5Eh     ; 2nd row
+	              FCFCFC00
+1420:     -	0A34  FCFCF0F0	        DEFB    0FCh,0FCh,0F0h,0F0h,0F0h,0F0h,0F0h,0F0h ; _ 5Fh     ; 1st row of NABU
+	              F0F0F0F0
+1421:     -	0A3C  FCFC0C0C	        DEFB    0FCh,0FCh,0Ch,0Ch,0Ch,04h,04h,04h ; `
+	              0C040404
+1422:     -	0A44  FCFCE0E0	        DEFB    0FCh,0FCh,0E0h,0E0h,0E0h,0E0h,0E0h,0E0h ; a
+	              E0E0E0E0
+1423:     -	0A4C  FCFC7C7C	        DEFB    0FCh,0FCh,7Ch,7Ch,7Ch,7Ch,7Ch,7Ch ; b
+	              7C7C7C7C
+1424:     -	0A54  FCFC8080	        DEFB    0FCh,0FCh,80h,80h,80h,18h,18h,18h ; c
+	              80181818
+1425:     -	0A5C  FCFC7C7C	        DEFB    0FCh,0FCh,7Ch,7Ch,7Ch,3Ch,3Ch,3Ch ; d
+	              7C3C3C3C
+1426:     -	0A64  FCFC8080	        DEFB    0FCh,0FCh,80h,80h,80h,80h,80h,80h ; e
+	              80808080
+1427:     -	0A6C  FCFC0000	        DEFB    0FCh,0FCh,00h,00h,00h,60h,70h,70h ; f
+	              00607070
+1428:     -	0A74  FCFC7838	        DEFB    0FCh,0FCh,78h,38h,18h,08h,08h,08h ; g
+	              18080808
+1429:     -	0A7C  FCFC0404	        DEFB    0FCh,0FCh,04h,04h,04h,04h,04h,04h ; h
+	              04040404
+1430:     -	0A84  FCFCC0C0	        DEFB    0FCh,0FCh,0C0h,0C0h,0C0h,0C0h,0C0h,0C0h ; i
+	              C0C0C0C0
+1431:     -	0A8C  FCFC3C3C	        DEFB    0FCh,0FCh,3Ch,3Ch,3Ch,3Ch,3Ch,3Ch ; j
+	              3C3C3C3C
+1432:     -	0A94  F0F0F0F0	        DEFB    0F0h,0F0h,0F0h,0F0h,0F0h,0F0h,0F0h,0F0h ; k 6Bh     ;2nd row of NABU
+	              F0F0F0F0
+1433:     -	0A9C  00002030	        DEFB    00h,00h,20h,30h,30h,38h,38h,3Ch ; l
+	              3038383C
+1434:     -	0AA4  E0E0E060	        DEFB    0E0h,0E0h,0E0h,60h,60h,60h,20h,20h ; m
+	              60602020
+1435:     -	0AAC  78787870	        DEFB    78h,78h,78h,70h,70h,70h,60h,60h ; n
+	              70706060
+1436:     -	0AB4  183C3C3C	        DEFB    18h,3Ch,3Ch,3Ch,3Ch,00h,00h,00h ; o
+	              3C000000
+1437:     -	0ABC  1C1C1C0C	        DEFB    1Ch,1Ch,1Ch,0Ch,0Ch,0Ch,04h,04h ; p
+	              0C0C0404
+1438:     -	0AC4  80808080	        DEFB    80h,80h,80h,80h,80h,80h,80h,80h ; q
+	              80808080
+1439:     -	0ACC  60600004	        DEFB    60h,60h,00h,04h,00h,60h,60h,70h ; r
+	              00606070
+1440:     -	0AD4  183878F8	        DEFB    18h,38h,78h,0F8h,78h,38h,18h,08h ; s
+	              78381808
+1441:     -	0ADC  04040404	        DEFB    04h,04h,04h,04h,04h,04h,04h,04h ; t
+	              04040404
+1442:     -	0AE4  C0C0C0C0	        DEFB    0C0h,0C0h,0C0h,0C0h,0C0h,0C0h,0C0h,0C0h ; u
+	              C0C0C0C0
+1443:     -	0AEC  3C3C3C3C	        DEFB    3Ch,3Ch,3Ch,3Ch,3Ch,3Ch,3Ch,3Ch ; v
+	              3C3C3C3C
+1444:     -	0AF4  F0F0F0F0	        DEFB    0F0h,0F0h,0F0h,0F0h,0F0h,0FCh,0FCh,00h ; w 77h     ; 3rd row of NABU
+	              F0FCFC00
+1445:     -	0AFC  3C3C3C3C	        DEFB    3Ch,3Ch,3Ch,3Ch,3Ch,0FCh,0FCh,00h ; x
+	              3CFCFC00
+1446:     -	0B04  00008080	        DEFB    00h,00h,80h,80h,80h,0FCh,0FCh,00h ; y
+	              80FCFC00
+1447:     -	0B0C  60404040	        DEFB    60h,40h,40h,40h,40h,0FCh,0FCh,00h ; z
+	              40FCFC00
+1448:     -	0B14  0018183C	        DEFB    00h,18h,18h,3Ch,3Ch,0FCh,0FCh,00h ; {
+	              3CFCFC00
+1449:     -	0B1C  04000000	        DEFB    04h,00h,00h,00h,00h,0FCh,0FCh,00h ; |
+	              00FCFC00
+1450:     -	0B24  80808080	        DEFB    80h,80h,80h,80h,80h,0FCh,0FCh,00h ; }
+	              80FCFC00
+1451:     -	0B2C  70600000	        DEFB    70h,60h,00h,00h,00h,0FCh,0FCh,00h ; ~
+	              00FCFC00
+1452:     -	0B34  08081C3C	        DEFB    08h,08h,1Ch,3Ch,7Ch,0FCh,0FCh,00h ; (DEL) 7Fh 127d
+	              7CFCFC00
+1453:     -	0B3C  04000080	        DEFB    04h,00h,00h,80h,0C0h,0FCh,0FCh,00h ; 
+	              C0FCFC00
+1454:     -	0B44  C0800000	        DEFB    0C0h,80h,00h,00h,04h,0FCh,0FCh,00h ; 
+	              04FCFC00
+1455:     -	0B4C  3C3C7CFC	        DEFB    3Ch,3Ch,7Ch,0FCh,0FCh,0FCh,0FCh,00h ; 
+	              FCFCFC00
+1456:     -	0B54  FCFCFCFC	        DEFB    0FCh,0FCh,0FCh,0FCh,00h,0FCh,0FCh,0FCh ; 83h       ; 6th row
+	              00FCFCFC
+1457:     -	0B5C  00007C3C	        DEFB    00h,00h,7Ch,3Ch,00h,00h,00h,00h ; 84h       ; bottom left corner
+	              00000000
+1458:     -	0B64  0000FCFC	        DEFB    00h,00h,0FCh,0FCh,00h,00h,0FCh,00h ; 85h       ; bottom middle 10
+	              0000FC00
+1459:     -	0B6C  0000F8F0	        DEFB    00h,00h,0F8h,0F0h,00h,00h,00h,00h ; 86h       ; bottom right corner
+	              00000000
+1460:				; 
+1461:				; 
+1462:				; LOOK UP TABLE FOR PACKET CRC
+1463:     -	0B74          	CRC_TBL:
+1464:     -	0B74  00002110	        DEFB    00h,00h,21h,10h,42h,20h,63h,30h 	
+	              42206330
+1465:     -	0B7C  8440A550	        DEFB    84h,40h,0A5h,50h,0C6h,60h,0E7h,70h 	
+	              C660E770
+1466:     -	0B84  08812991	        DEFB    08h,81h,29h,91h,4Ah,0A1h,6Bh,0B1h
+	              4AA16BB1
+1467:     -	0B8C  8CC1ADD1	        DEFB    8Ch,0C1h,0ADh,0D1h,0CEh,0E1h,0EFh,0F1h
+	              CEE1EFF1
+1468:     -	0B94  31121002	        DEFB    31h,12h,10h,02h,73h,32h,52h,22h 
+	              73325222
+1469:     -	0B9C  B5529442	        DEFB    0B5h,52h,94h,42h,0F7h,72h,0D6h,62h
+	              F772D662
+1470:     -	0BA4  39931883	        DEFB    39h,93h,18h,83h,7Bh,0B3h,5Ah,0A3h
+	              7BB35AA3
+1471:     -	0BAC  BDD39CC3	        DEFB    0BDh,0D3h,9Ch,0C3h,0FFh,0F3h,0DEh,0E3h
+	              FFF3DEE3
+1472:     -	0BB4  62244334	        DEFB    62h,24h,43h,34h,20h,04h,01h,14h
+	              20040114
+1473:     -	0BBC  E664C774	        DEFB    0E6h,64h,0C7h,74h,0A4h,44h,85h,54h 
+	              A4448554
+1474:     -	0BC4  6AA54BB5	        DEFB    6Ah,0A5h,4Bh,0B5h,28h,85h,09h,95h 
+	              28850995
+1475:     -	0BCC  EEE5CFF5	        DEFB    0EEh,0E5h,0CFh,0F5h,0ACh,0C5h,8Dh,0D5h 
+	              ACC58DD5
+1476:     -	0BD4  53367226	        DEFB    53h,36h,72h,26h,11h,16h,30h,06h 
+	              11163006
+1477:     -	0BDC  D776F666	        DEFB    0D7h,76h,0F6h,66h,95h,56h,0B4h,46h 
+	              9556B446
+1478:     -	0BE4  5BB77AA7	        DEFB    5Bh,0B7h,7Ah,0A7h,19h,97h,38h,87h 
+	              19973887
+1479:     -	0BEC  DFF7FEE7	        DEFB    0DFh,0F7h,0FEh,0E7h,9Dh,0D7h,0BCh,0C7h 
+	              9DD7BCC7
+1480:     -	0BF4  C448E558	        DEFB    0C4h,48h,0E5h,58h,86h,68h,0A7h,78h 
+	              8668A778
+1481:     -	0BFC  40086118	        DEFB    40h,08h,61h,18h,02h,28h,23h,38h 
+	              02282338
+1482:     -	0C04  CCC9EDD9	        DEFB    0CCh,0C9h,0EDh,0D9h,8Eh,0E9h,0AFh,0F9h 
+	              8EE9AFF9
+1483:     -	0C0C  48896999	        DEFB    48h,89h,69h,99h,0Ah,0A9h,2Bh,0B9h 
+	              0AA92BB9
+1484:     -	0C14  F55AD44A	        DEFB    0F5h,5Ah,0D4h,4Ah,0B7h,7Ah,96h,6Ah 
+	              B77A966A
+1485:     -	0C1C  711A500A	        DEFB    71h,1Ah,50h,0Ah,33h,3Ah,12h,2Ah 
+	              333A122A
+1486:     -	0C24  FDDBDCCB	        DEFB    0FDh,0DBh,0DCh,0CBh,0BFh,0FBh,9Eh,0EBh 
+	              BFFB9EEB
+1487:     -	0C2C  799B588B	        DEFB    79h,9Bh,58h,8Bh,3Bh,0BBh,1Ah,0ABh 
+	              3BBB1AAB
+1488:     -	0C34  A66C877C	        DEFB    0A6h,6Ch,87h,7Ch,0E4h,4Ch,0C5h,5Ch 
+	              E44CC55C
+1489:     -	0C3C  222C033C	        DEFB    22h,2Ch,03h,3Ch,60h,0Ch,41h,1Ch 
+	              600C411C
+1490:     -	0C44  AEED8FFD	        DEFB    0AEh,0EDh,8Fh,0FDh,0ECh,0CDh,0CDh,0DDh 
+	              ECCDCDDD
+1491:     -	0C4C  2AAD0BBD	        DEFB    2Ah,0ADh,0Bh,0BDh,68h,8Dh,49h,9Dh 
+	              688D499D
+1492:     -	0C54  977EB66E	        DEFB    97h,7Eh,0B6h,6Eh,0D5h,5Eh,0F4h,4Eh 
+	              D55EF44E
+1493:     -	0C5C  133E322E	        DEFB    13h,3Eh,32h,2Eh,51h,1Eh,70h,0Eh 
+	              511E700E
+1494:     -	0C64  9FFFBEEF	        DEFB    9Fh,0FFh,0BEh,0EFh,0DDh,0DFh,0FCh,0CFh 
+	              DDDFFCCF
+1495:     -	0C6C  1BBF3AAF	        DEFB    1Bh,0BFh,3Ah,0AFh,59h,9Fh,78h,8Fh 
+	              599F788F
+1496:     -	0C74  8891A981	        DEFB    88h,91h,0A9h,81h,0CAh,0B1h,0EBh,0A1h 
+	              CAB1EBA1
+1497:     -	0C7C  0CD12DC1	        DEFB    0Ch,0D1h,2Dh,0C1h,4Eh,0F1h,6Fh,0E1h 
+	              4EF16FE1
+1498:     -	0C84  8010A100	        DEFB    80h,10h,0A1h,00h,0C2h,30h,0E3h,20h 
+	              C230E320
+1499:     -	0C8C  04502540	        DEFB    04h,50h,25h,40h,46h,70h,67h,60h 
+	              46706760
+1500:     -	0C94  B9839893	        DEFB    0B9h,83h,98h,93h,0FBh,0A3h,0DAh,0B3h 
+	              FBA3DAB3
+1501:     -	0C9C  3DC31CD3	        DEFB    3Dh,0C3h,1Ch,0D3h,7Fh,0E3h,5Eh,0F3h 
+	              7FE35EF3
+1502:     -	0CA4  B1029012	        DEFB    0B1h,02h,90h,12h,0F3h,22h,0D2h,32h 
+	              F322D232
+1503:     -	0CAC  35421452	        DEFB    35h,42h,14h,52h,77h,62h,56h,72h 
+	              77625672
+1504:     -	0CB4  EAB5CBA5	        DEFB    0EAh,0B5h,0CBh,0A5h,0A8h,95h,89h,85h 
+	              A8958985
+1505:     -	0CBC  6EF54FE5	        DEFB    6Eh,0F5h,4Fh,0E5h,2Ch,0D5h,0Dh,0C5h 
+	              2CD50DC5
+1506:     -	0CC4  E234C324	        DEFB    0E2h,34h,0C3h,24h,0A0h,14h,81h,04h 
+	              A0148104
+1507:     -	0CCC  66744764	        DEFB    66h,74h,47h,64h,24h,54h,05h,44h 
+	              24540544
+1508:     -	0CD4  DBA7FAB7	        DEFB    0DBh,0A7h,0FAh,0B7h,99h,87h,0B8h,97h 
+	              9987B897
+1509:     -	0CDC  5FE77EF7	        DEFB    5Fh,0E7h,7Eh,0F7h,1Dh,0C7h,3Ch,0D7h 
+	              1DC73CD7
+1510:     -	0CE4  D326F236	        DEFB    0D3h,26h,0F2h,36h,91h,06h,0B0h,16h 
+	              9106B016
+1511:     -	0CEC  57667676	        DEFB    57h,66h,76h,76h,15h,46h,34h,56h 
+	              15463456
+1512:     -	0CF4  4CD96DC9	        DEFB    4Ch,0D9h,6Dh,0C9h,0Eh,0F9h,2Fh,0E9h 
+	              0EF92FE9
+1513:     -	0CFC  C899E989	        DEFB    0C8h,99h,0E9h,89h,8Ah,0B9h,0ABh,0A9h 
+	              8AB9ABA9
+1514:     -	0D04  44586548	        DEFB    44h,58h,65h,48h,06h,78h,27h,68h 
+	              06782768
+1515:     -	0D0C  C018E108	        DEFB    0C0h,18h,0E1h,08h,82h,38h,0A3h,28h 
+	              8238A328
+1516:     -	0D14  7DCB5CDB	        DEFB    7Dh,0CBh,5Ch,0DBh,3Fh,0EBh,1Eh,0FBh 
+	              3FEB1EFB
+1517:     -	0D1C  F98BD89B	        DEFB    0F9h,8Bh,0D8h,9Bh,0BBh,0ABh,9Ah,0BBh 
+	              BBAB9ABB
+1518:     -	0D24  754A545A	        DEFB    75h,4Ah,54h,5Ah,37h,6Ah,16h,7Ah 
+	              376A167A
+1519:     -	0D2C  F10AD01A	        DEFB    0F1h,0Ah,0D0h,1Ah,0B3h,2Ah,92h,3Ah 
+	              B32A923A
+1520:     -	0D34  2EFD0FED	        DEFB    2Eh,0FDh,0Fh,0EDh,6Ch,0DDh,4Dh,0CDh 
+	              6CDD4DCD
+1521:     -	0D3C  AABD8BAD	        DEFB    0AAh,0BDh,8Bh,0ADh,0E8h,9Dh,0C9h,8Dh 
+	              E89DC98D
+1522:     -	0D44  267C076C	        DEFB    26h,7Ch,07h,6Ch,64h,5Ch,45h,4Ch 
+	              645C454C
+1523:     -	0D4C  A23C832C	        DEFB    0A2h,3Ch,83h,2Ch,0E0h,1Ch,0C1h,0Ch 
+	              E01CC10C
+1524:     -	0D54  1FEF3EFF	        DEFB    1Fh,0EFh,3Eh,0FFh,5Dh,0CFh,7Ch,0DFh 
+	              5DCF7CDF
+1525:     -	0D5C  9BAFBABF	        DEFB    9Bh,0AFh,0BAh,0BFh,0D9h,8Fh,0F8h,9Fh 
+	              D98FF89F
+1526:     -	0D64  176E367E	        DEFB    17h,6Eh,36h,7Eh,55h,4Eh,74h,5Eh 
+	              554E745E
+1527:     -	0D6C  932EB23E	        DEFB    93h,2Eh,0B2h,3Eh,0D1h,0Eh,0F0h,1Eh 
+	              D10EF01E
+1528:					
+1529:					; 646 BYTES OF FREE SPACE
+1530:					
+1531:     -	0FFA          		ORG	0FFAh
+1532:     -	0FFA  0B      		DEFB	0Bh		; LAST ADDRESS OF LOADED PROGRAM?
+1533:     -	0FFB  14      		DEFB	14h
+1534:     -	0FFC  30      	ROMPN:  DEFB    30h             ; ROM PART NUMBER: ASCII '60'
+1535:     -	0FFD  36      	        DEFB    36h
+1536:     -	0FFE  CF      	CHKSUM: DEFB    0CFh		; ROM CHECKSUM: SUM OF BYTES 0000h-0FFDh
+1537:     -	0FFF  3B      	L0FFF:  DEFB    3Bh
+
+
+
+Statistics:
+
+     4	passes
+     0	jr promotions
+   187	symbols
+  3450	bytes
+
+
+
+Symbol Table:
+
+ALERT          =10        16
+BEEP             6A2      1698
+BEEP1            6B5      1717
+BEGIN          =140F      5135
+BOOT_FLG       =FFF6      65526
+CALC_CRC         65D      1629
+CHAN_OK          29F      671
+CHECK          =08        8
+CHKER1           62C      1580
+CHKSUM           FFE      4094
+CHK_ERR          61C      1564
+CHK_HCCA         36C      876
+CHK_KB           199      409
+CHK_KB1          1A4      420
+CHK_KB2          1B9      441
+CHK_KB3          1C1      449
+CHK_LOAD         532      1330
+CHK_TONE         17E      382
+CLEAR1           507      1287
+CLEAR_SCREEN     4F8      1272
+CLRPSG           157      343
+COLD_BOOT       00        0
+CRC_TBL          B74      2932
+CTRL_BITS      =FFEE      65518
+CTRL_REG       =00        0
+DECTST1          36A      874
+DEC_AND_TEST_DE  363      867
+DELCH1           5D8      1496
+DEL_CHAR         5D0      1488
+DSP_LOGO         50C      1292
+DSP_MSG          56B      1387
+DSP_STR        =FFF9      65529
+ERR_CNT        =FFF0      65520
+ERR_MSGS         73A      1850
+EXP_CONF         5EE      1518
+FLASH_ALERT      4A6      1190
+FLSH1            4BA      1210
+FLSH2            4CD      1229
+GEN_TONES        160      352
+GETDIG           57E      1406
+GETHX2           5A3      1443
+GETHX3           5AB      1451
+GETHX4           5BA      1466
+GETHX5           5C2      1474
+GETHX6           5CB      1483
+GET_HEX          57C      1404
+GTONE1           162      354
+GTONE2           164      356
+HCCA           =80        128
+HEX1             64B      1611
+HEXTOASC         643      1603
+INIT_PSG         68A      1674
+INT_HRCV       =80        128
+INT_HSND       =40        64
+INT_KBD        =20        32
+INV_RESP       =02        2
+KB_CTRL          52A      1322
+KB_DATA        =90        144
+KB_STAT        =91        145
+L0FFF            FFF      4095
+LDPKT1           302      770
+LD_VDP_LP        4F1      1265
+LED_TBL          4DD      1245
+LOAD_DONE        34E      846
+LOAD_FLG       =FFFE      65534
+LOAD_PKT         2D7      727
+LOAD_VDP_TABLE   4E3      1251
+LOGO1            514      1300
+LOGO_DATA        7D3      2003
+MSG_ADP_FAIL     799      1945
+MSG_CHAN         6D1      1745
+MSG_KB_FAIL      786      1926
+MSG_PSG_FAIL     773      1907
+MSG_RAM_FAIL     760      1888
+MSG_RETYPE       7AC      1964
+MSG_ROM_FAIL     73A      1850
+MSG_VID_FAIL     74D      1869
+MSG_WAIT         72C      1836
+MSG_WRONG        6F5      1781
+NA_AUTH        =91        145
+NA_CHANGE      =85        133
+NA_CONFIRM     =E4        228
+NA_DONE        =E1        225
+NA_ESCAPE      =10        16
+NA_GET_STATUS  =82        130
+NA_NO_SIGNAL   =9F        159
+NA_REQUEST     =84        132
+NA_RESET       =80        128
+NA_SET_STATUS  =81        129
+NA_SIGNAL      =1F        31
+NA_STARTUP     =83        131
+NA_UNAUTH      =90        144
+NEWCOD1          22E      558
+NEWCOD2          23E      574
+NEWCOD3          24C      588
+NEWCOD4          266      614
+NEWCOD5          26E      622
+NEWCODE          228      552
+OK_RESP        =00        0
+OUT_HCCA         379      889
+PAUSE          =20        32
+POST_FLG       =FFEF      65519
+PRESS_1         82        130
+PSG_ADDR       =41        65
+PSG_DATA       =40        64
+PSG_PORTB        521      1313
+PSG_R14_INT_MASK=0E        14
+PSG_R15_STATUS =0F        15
+PSG_R7_ENABLE  =07        7
+RAM_TEST         118      280
+RAM_TEST_START =2000      8192
+RBEEP1           475      1141
+RBEEP2           483      1155
+RBEEP3           490      1168
+RCVP1            3C1      961
+RCVP10           44D      1101
+RCVP11           465      1125
+RCVP2            3DC      988
+RCVP3            3EB      1003
+RCVP4            3FB      1019
+RCVP5            413      1043
+RCVP6            417      1047
+RCVP7            428      1064
+RCVP8            43D      1085
+RCVP9            441      1089
+RCV_PKT          3B0      944
+RESP_BEEP        46A      1130
+ROMPN            FFC      4092
+ROM_CHECK       8C        140
+ROM_CHK1        98        152
+ROM_CHK2        A7        167
+ROM_CHK3        BB        187
+ROM_CHK4        BE        190
+ROM_SEL        =01        1
+ROM_STR          7D0      2000
+RTEST1           123      291
+RTEST2           136      310
+RTEST3           147      327
+RTEST4           14A      330
+SEND_START       386      902
+SET_INT_MASK     64D      1613
+SET_LED          4D1      1233
+SHMS1            606      1542
+SHOW1            541      1345
+SHOW2            54C      1356
+SHOW_MSG         5F3      1523
+SHOW_PN          53E      1342
+SIG_STAT       =FFF8      65528
+SND_STRT1        388      904
+SND_STRT2        38D      909
+SND_STRT3        393      915
+SND_STRT4        3A4      932
+SND_STRT5        3AB      939
+STACK          =FFEE      65518
+START1           1E3      483
+START2           206      518
+START3           221      545
+START_HCCA       1CA      458
+STAT_CONN      =8F        143
+STAT_GOOD      =06        6
+STAT_NA_RDY    =1E        30
+STAT_READY     =05        5
+STAT_SIG       =01        1
+STROBE         =04        4
+ST_FAIL          1D6      470
+TEST_NUM       =FFF7      65527
+TOASCII          633      1587
+TONE_TBL         18B      395
+TV_SW          =02        2
+VDP_ADDR       =A1        161
+VDP_DATA       =A0        160
+VDP_INIT        11        17
+VDP_INIT_TBL     6C9      1737
+VDP_RAM_TEST    D7        215
+VDP_TABLE        83C      2108
+VDP_TST_PREP    D0        208
+VRAM           =FC40      64576
+VTEST1          E0        224
+VTEST2           103      259
+VTEST3           106      262
+WAIT1            67D      1661
+WAIT_FOR_HCCA    67A      1658
+WAIT_KB         61        97
+WAIT_KB1        6A        106
+WAIT_KB2        7D        125
+WAIT_KB3        88        136
+WDOG             1BC      444
